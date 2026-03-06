@@ -13,6 +13,8 @@ import {
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  PROJECT_ROOT,
+  STORE_DIR,
   TIMEZONE,
 } from './config.js';
 import { readEnvFile } from './env.js';
@@ -58,12 +60,25 @@ interface VolumeMount {
   readonly: boolean;
 }
 
+// DooD path translation: when the host process runs inside a container,
+// Docker volume mounts are interpreted by the *host* daemon, so paths
+// must be translated from the container's view to the host's real paths.
+const HOST_DATA_DIR = process.env.NANOCLAW_HOST_DATA_DIR || '';
+
+function toHostPath(p: string): string {
+  if (!HOST_DATA_DIR) return p; // bare-metal: no translation
+  if (p.startsWith(DATA_DIR)) return p.replace(DATA_DIR, path.join(HOST_DATA_DIR, 'data'));
+  if (p.startsWith(GROUPS_DIR)) return p.replace(GROUPS_DIR, path.join(HOST_DATA_DIR, 'groups'));
+  if (p.startsWith(STORE_DIR)) return p.replace(STORE_DIR, path.join(HOST_DATA_DIR, 'store'));
+  return p;
+}
+
 function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
-  const projectRoot = process.cwd();
+  const projectRoot = PROJECT_ROOT;
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -138,7 +153,7 @@ function buildVolumeMounts(
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
+  const skillsSrc = path.join(PROJECT_ROOT, 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
     for (const skillDir of fs.readdirSync(skillsSrc)) {
@@ -246,10 +261,11 @@ function buildContainerArgs(
   }
 
   for (const mount of mounts) {
+    const hp = toHostPath(mount.hostPath);
     if (mount.readonly) {
-      args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
+      args.push(...readonlyMountArgs(hp, mount.containerPath));
     } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+      args.push('-v', `${hp}:${mount.containerPath}`);
     }
   }
 

@@ -1,0 +1,16 @@
+services:
+  nanoclaw:
+    image: nanoclaw-base:latest
+    container_name: nanoclaw
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    environment:
+      - NANOCLAW_DATA_DIR=/data
+      - NANOCLAW_HOST_DATA_DIR=${PWD}/data
+      - WEB_ENABLED=true
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"

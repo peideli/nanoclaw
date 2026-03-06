@@ -26,7 +26,10 @@ export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
-const PROJECT_ROOT = process.cwd();
+export const PROJECT_ROOT = process.cwd();
+const DATA_ROOT = process.env.NANOCLAW_DATA_DIR
+  ? path.resolve(process.env.NANOCLAW_DATA_DIR)
+  : PROJECT_ROOT;
 const HOME_DIR = process.env.HOME || os.homedir();
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers
@@ -36,12 +39,12 @@ export const MOUNT_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'mount-allowlist.json',
 );
-export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
-export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
-export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+export const STORE_DIR = path.resolve(DATA_ROOT, 'store');
+export const GROUPS_DIR = path.resolve(DATA_ROOT, 'groups');
+export const DATA_DIR = path.resolve(DATA_ROOT, 'data');
 export const MAIN_GROUP_FOLDER = 'main';
 
-export const USERS_DIR = path.resolve(PROJECT_ROOT, 'data', 'users');
+export const USERS_DIR = path.resolve(DATA_ROOT, 'data', 'users');
 export const MAX_CONTAINERS_PER_USER = Math.max(
   1,
   parseInt(process.env.MAX_CONTAINERS_PER_USER || '2', 10) || 2,
@@ -93,13 +96,9 @@ export const SESSION_TOKEN_THRESHOLD = Math.max(
 );
 
 export const CLASSIFIER_API_BASE =
-  process.env.CLASSIFIER_API_BASE ||
-  envConfig.CLASSIFIER_API_BASE ||
-  '';
+  process.env.CLASSIFIER_API_BASE || envConfig.CLASSIFIER_API_BASE || '';
 export const CLASSIFIER_API_KEY =
-  process.env.CLASSIFIER_API_KEY ||
-  envConfig.CLASSIFIER_API_KEY ||
-  '';
+  process.env.CLASSIFIER_API_KEY || envConfig.CLASSIFIER_API_KEY || '';
 export const CLASSIFIER_MODEL =
   process.env.CLASSIFIER_MODEL ||
   envConfig.CLASSIFIER_MODEL ||
