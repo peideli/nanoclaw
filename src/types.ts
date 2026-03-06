@@ -39,6 +39,7 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
+  userId?: string; // Web user who owns this group
 }
 
 export interface NewMessage {
@@ -117,6 +118,24 @@ export interface AsyncCheckResult {
   result_dir?: string;
   error?: string;
   [key: string]: unknown;
+}
+
+// --- Audit types ---
+
+export type AuditAction = 'agent_invoked' | 'agent_completed' | 'session_rotated';
+
+export interface AuditLog {
+  id: string;
+  timestamp: string;
+  user_id: string | null;
+  channel: string | null;
+  chat_jid: string | null;
+  action: AuditAction;
+  detail: string | null; // JSON
+  token_input: number | null;
+  token_output: number | null;
+  session_id: string | null;
+  duration_ms: number | null;
 }
 
 // Callback for chat metadata discovery.

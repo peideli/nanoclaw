@@ -12,6 +12,9 @@ const envConfig = readEnvFile([
   'WEB_ENABLED',
   'WEB_PORT',
   'WEB_JWT_SECRET',
+  'CLASSIFIER_API_BASE',
+  'CLASSIFIER_API_KEY',
+  'CLASSIFIER_MODEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -37,6 +40,12 @@ export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const MAIN_GROUP_FOLDER = 'main';
+
+export const USERS_DIR = path.resolve(PROJECT_ROOT, 'data', 'users');
+export const MAX_CONTAINERS_PER_USER = Math.max(
+  1,
+  parseInt(process.env.MAX_CONTAINERS_PER_USER || '2', 10) || 2,
+);
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
@@ -68,10 +77,33 @@ export const WEB_PORT = parseInt(
 export const WEB_JWT_SECRET =
   process.env.WEB_JWT_SECRET || envConfig.WEB_JWT_SECRET || '';
 
+export const MAX_CONTEXT_MESSAGES = Math.max(
+  1,
+  parseInt(process.env.MAX_CONTEXT_MESSAGES || '50', 10) || 50,
+);
+
 export const ASYNC_WATCH_POLL_INTERVAL = parseInt(
   process.env.ASYNC_WATCH_POLL_INTERVAL || '10000',
   10,
 );
+
+export const SESSION_TOKEN_THRESHOLD = Math.max(
+  1000,
+  parseInt(process.env.SESSION_TOKEN_THRESHOLD || '200000', 10) || 200000,
+);
+
+export const CLASSIFIER_API_BASE =
+  process.env.CLASSIFIER_API_BASE ||
+  envConfig.CLASSIFIER_API_BASE ||
+  '';
+export const CLASSIFIER_API_KEY =
+  process.env.CLASSIFIER_API_KEY ||
+  envConfig.CLASSIFIER_API_KEY ||
+  '';
+export const CLASSIFIER_MODEL =
+  process.env.CLASSIFIER_MODEL ||
+  envConfig.CLASSIFIER_MODEL ||
+  'moonshot-v1-8k';
 
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,

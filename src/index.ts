@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -6,6 +7,7 @@ import {
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
+  SESSION_TOKEN_THRESHOLD,
   TRIGGER_PATTERN,
   WEB_ENABLED,
   WEB_PORT,
@@ -23,14 +25,19 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getRecentMessageSummary,
   getRouterState,
+  getSessionCumulativeTokens,
+  getWindowedMessagesSince,
   initDatabase,
+  logAudit,
   setRegisteredGroup,
   setRouterState,
   setSession,
@@ -41,8 +48,17 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startAsyncWatcher } from './async-watcher.js';
 import { startIpcWatcher } from './ipc.js';
-import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  findChannel,
+  formatMessages,
+  formatMessagesWithWindow,
+  formatOutbound,
+} from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import {
+  isClassifierEnabled,
+  shouldRotateForNewTask,
+} from './task-classifier.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -130,6 +146,103 @@ export function _setRegisteredGroups(
   registeredGroups = groups;
 }
 
+const MEMORY_EXTRACTION_PROMPT =
+  '[SYSTEM: Session is ending. Please update /workspace/user/memory.md with important new information from this conversation. Include decisions, preferences, ongoing tasks, and technical details. Keep it concise. Do not remove existing content unless clearly outdated.]';
+
+/**
+ * Rotate the session for a group: extract memory, close container, clear session state.
+ */
+async function rotateSession(
+  group: RegisteredGroup,
+  chatJid: string,
+  reason: string,
+): Promise<void> {
+  logger.info(
+    { group: group.folder, reason },
+    'Rotating session',
+  );
+
+  // Memory extraction: if the user has a userId (Web Chat) and container is active,
+  // send the extraction prompt and wait for it to finish.
+  if (group.userId && queue.sendMessage(chatJid, MEMORY_EXTRACTION_PROMPT)) {
+    logger.debug({ group: group.folder }, 'Sent memory extraction prompt');
+    const idle = await queue.waitForIdle(chatJid, 30000);
+    if (!idle) {
+      logger.warn(
+        { group: group.folder },
+        'Memory extraction timed out after 30s',
+      );
+    }
+  }
+
+  // Close the container
+  queue.closeStdin(chatJid);
+
+  // Clear in-memory session
+  delete sessions[group.folder];
+
+  // Clear DB session
+  deleteSession(group.folder);
+
+  // Log audit event
+  logAudit({
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    user_id: group.userId ?? null,
+    channel: null,
+    chat_jid: chatJid,
+    action: 'session_rotated',
+    detail: JSON.stringify({ group: group.folder, reason }),
+    token_input: null,
+    token_output: null,
+    session_id: null,
+    duration_ms: null,
+  });
+}
+
+/**
+ * Check if the session should be rotated due to token accumulation.
+ * Called after runAgent completes.
+ */
+async function checkTokenThreshold(
+  group: RegisteredGroup,
+  chatJid: string,
+): Promise<void> {
+  const cumulative = getSessionCumulativeTokens(group.folder);
+  if (cumulative >= SESSION_TOKEN_THRESHOLD) {
+    logger.info(
+      { group: group.folder, cumulative, threshold: SESSION_TOKEN_THRESHOLD },
+      'Token threshold exceeded, rotating session',
+    );
+    await rotateSession(group, chatJid, `token_threshold_${cumulative}`);
+  }
+}
+
+/**
+ * Check classifier to see if a new message starts a new task.
+ * If so, rotate the session before processing.
+ */
+async function checkClassifierBeforeRun(
+  group: RegisteredGroup,
+  chatJid: string,
+  newMessageText: string,
+): Promise<boolean> {
+  if (!isClassifierEnabled()) return false;
+  if (!sessions[group.folder]) return false; // No existing session to rotate
+
+  const recentHistory = getRecentMessageSummary(chatJid, 5);
+  const shouldRotate = await shouldRotateForNewTask(
+    recentHistory,
+    newMessageText,
+  );
+
+  if (shouldRotate) {
+    await rotateSession(group, chatJid, 'classifier_new_task');
+  }
+
+  return shouldRotate;
+}
+
 /**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
@@ -147,33 +260,41 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-  const missedMessages = getMessagesSince(
+  const windowed = getWindowedMessagesSince(
     chatJid,
     sinceTimestamp,
     ASSISTANT_NAME,
   );
 
-  if (missedMessages.length === 0) return true;
+  if (windowed.messages.length === 0) return true;
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const hasTrigger = missedMessages.some((m) =>
+    const hasTrigger = windowed.messages.some((m) =>
       TRIGGER_PATTERN.test(m.content.trim()),
     );
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessages(missedMessages);
+  const prompt = formatMessagesWithWindow(windowed);
+
+  // Check classifier: if this looks like a new task, rotate session first
+  const lastMessage = windowed.messages[windowed.messages.length - 1];
+  await checkClassifierBeforeRun(group, chatJid, lastMessage.content);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
   lastAgentTimestamp[chatJid] =
-    missedMessages[missedMessages.length - 1].timestamp;
+    windowed.messages[windowed.messages.length - 1].timestamp;
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    {
+      group: group.name,
+      messageCount: windowed.messages.length,
+      droppedCount: windowed.droppedCount,
+    },
     'Processing messages',
   );
 
@@ -185,15 +306,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     idleTimer = setTimeout(() => {
       logger.debug(
         { group: group.name },
-        'Idle timeout, closing container stdin',
+        'Idle timeout, rotating session',
       );
-      queue.closeStdin(chatJid);
+      rotateSession(group, chatJid, 'idle_timeout').catch((err) =>
+        logger.error({ group: group.name, err }, 'Error rotating session on idle'),
+      );
     }, IDLE_TIMEOUT);
   };
 
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+
+  // Determine channel name for audit logging
+  const auditChannel = channel.name;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -220,6 +346,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
+  }, {
+    messageCount: windowed.messages.length,
+    droppedCount: windowed.droppedCount,
+    channel: auditChannel,
   });
 
   await channel.setTyping?.(chatJid, false);
@@ -245,6 +375,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
+  // Check if token threshold exceeded after successful run
+  await checkTokenThreshold(group, chatJid);
+
   return true;
 }
 
@@ -253,9 +386,32 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  auditMeta?: { messageCount: number; droppedCount: number; channel?: string },
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
   const sessionId = sessions[group.folder];
+  const agentStartTime = Date.now();
+
+  // Log agent_invoked audit event
+  const auditSessionId = crypto.randomUUID();
+  logAudit({
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    user_id: group.userId ?? null,
+    channel: auditMeta?.channel ?? null,
+    chat_jid: chatJid,
+    action: 'agent_invoked',
+    detail: JSON.stringify({
+      group: group.folder,
+      prompt_length: prompt.length,
+      message_count: auditMeta?.messageCount ?? 0,
+      dropped_count: auditMeta?.droppedCount ?? 0,
+    }),
+    token_input: null,
+    token_output: null,
+    session_id: auditSessionId,
+    duration_ms: null,
+  });
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -282,13 +438,17 @@ async function runAgent(
     new Set(Object.keys(registeredGroups)),
   );
 
-  // Wrap onOutput to track session ID from streamed results
+  // Wrap onOutput to track session ID and accumulate token usage
+  let totalTokenInput = 0;
+  let totalTokenOutput = 0;
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
+        if (output.tokenInput) totalTokenInput += output.tokenInput;
+        if (output.tokenOutput) totalTokenOutput += output.tokenOutput;
         await onOutput(output);
       }
     : undefined;
@@ -303,6 +463,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        userId: group.userId,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -313,6 +474,30 @@ async function runAgent(
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
     }
+    if (output.tokenInput) totalTokenInput += output.tokenInput;
+    if (output.tokenOutput) totalTokenOutput += output.tokenOutput;
+
+    const durationMs = Date.now() - agentStartTime;
+    const status = output.status === 'error' ? 'error' : 'success';
+
+    // Log agent_completed audit event
+    logAudit({
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      user_id: group.userId ?? null,
+      channel: auditMeta?.channel ?? null,
+      chat_jid: chatJid,
+      action: 'agent_completed',
+      detail: JSON.stringify({
+        group: group.folder,
+        status,
+        output_sent: !!output.result,
+      }),
+      token_input: totalTokenInput || null,
+      token_output: totalTokenOutput || null,
+      session_id: auditSessionId,
+      duration_ms: durationMs,
+    });
 
     if (output.status === 'error') {
       logger.error(
@@ -324,6 +509,24 @@ async function runAgent(
 
     return 'success';
   } catch (err) {
+    const durationMs = Date.now() - agentStartTime;
+    logAudit({
+      id: crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      user_id: group.userId ?? null,
+      channel: auditMeta?.channel ?? null,
+      chat_jid: chatJid,
+      action: 'agent_completed',
+      detail: JSON.stringify({
+        group: group.folder,
+        status: 'error',
+        error: err instanceof Error ? err.message : String(err),
+      }),
+      token_input: totalTokenInput || null,
+      token_output: totalTokenOutput || null,
+      session_id: auditSessionId,
+      duration_ms: durationMs,
+    });
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
   }
@@ -390,22 +593,37 @@ async function startMessageLoop(): Promise<void> {
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
-          const allPending = getMessagesSince(
+          const allPendingWindowed = getWindowedMessagesSince(
             chatJid,
             lastAgentTimestamp[chatJid] || '',
             ASSISTANT_NAME,
           );
           const messagesToSend =
-            allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend);
+            allPendingWindowed.messages.length > 0
+              ? allPendingWindowed.messages
+              : groupMessages;
+          const formatted =
+            allPendingWindowed.messages.length > 0
+              ? formatMessagesWithWindow(allPendingWindowed)
+              : formatMessages(groupMessages);
 
-          if (queue.sendMessage(chatJid, formatted)) {
+          // Check classifier: if new task detected, rotate and enqueue fresh
+          const lastMsg = messagesToSend[messagesToSend.length - 1];
+          const classifierRotated = await checkClassifierBeforeRun(
+            group,
+            chatJid,
+            lastMsg.content,
+          );
+
+          if (classifierRotated) {
+            // Session was rotated — don't pipe to old container, enqueue for new one
+            queue.enqueueMessageCheck(chatJid, group?.userId);
+          } else if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
             );
-            lastAgentTimestamp[chatJid] =
-              messagesToSend[messagesToSend.length - 1].timestamp;
+            lastAgentTimestamp[chatJid] = lastMsg.timestamp;
             saveState();
             // Show typing indicator while the container processes the piped message
             channel
@@ -415,7 +633,7 @@ async function startMessageLoop(): Promise<void> {
               );
           } else {
             // No active container — enqueue for a new one
-            queue.enqueueMessageCheck(chatJid);
+            queue.enqueueMessageCheck(chatJid, group?.userId);
           }
         }
       }
@@ -439,7 +657,7 @@ function recoverPendingMessages(): void {
         { group: group.name, pendingCount: pending.length },
         'Recovery: found unprocessed messages',
       );
-      queue.enqueueMessageCheck(chatJid);
+      queue.enqueueMessageCheck(chatJid, group.userId);
     }
   }
 }

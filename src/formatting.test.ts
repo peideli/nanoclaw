@@ -4,6 +4,7 @@ import { ASSISTANT_NAME, TRIGGER_PATTERN } from './config.js';
 import {
   escapeXml,
   formatMessages,
+  formatMessagesWithWindow,
   formatOutbound,
   stripInternalTags,
 } from './router.js';
@@ -101,6 +102,50 @@ describe('formatMessages', () => {
   it('handles empty array', () => {
     const result = formatMessages([]);
     expect(result).toBe('<messages>\n\n</messages>');
+  });
+});
+
+// --- formatMessagesWithWindow ---
+
+describe('formatMessagesWithWindow', () => {
+  it('formats without context-note when no messages dropped', () => {
+    const result = formatMessagesWithWindow({
+      messages: [makeMsg({ content: 'hello' })],
+      droppedCount: 0,
+      totalCount: 1,
+    });
+    expect(result).not.toContain('<context-note>');
+    expect(result).toContain('<message sender="Alice"');
+    expect(result).toContain('>hello</message>');
+  });
+
+  it('includes context-note when messages are dropped', () => {
+    const result = formatMessagesWithWindow({
+      messages: [
+        makeMsg({ id: '1', content: 'recent1', timestamp: 't1' }),
+        makeMsg({ id: '2', content: 'recent2', timestamp: 't2' }),
+      ],
+      droppedCount: 8,
+      totalCount: 10,
+    });
+    expect(result).toContain('<context-note>');
+    expect(result).toContain('8 earlier messages omitted');
+    expect(result).toContain('showing most recent 2 of 10');
+    expect(result).toContain('>recent1</message>');
+    expect(result).toContain('>recent2</message>');
+  });
+
+  it('context-note appears before message tags', () => {
+    const result = formatMessagesWithWindow({
+      messages: [makeMsg({ content: 'msg' })],
+      droppedCount: 5,
+      totalCount: 6,
+    });
+    const noteIdx = result.indexOf('<context-note>');
+    const msgIdx = result.indexOf('<message sender=');
+    expect(noteIdx).toBeGreaterThan(-1);
+    expect(msgIdx).toBeGreaterThan(-1);
+    expect(noteIdx).toBeLessThan(msgIdx);
   });
 });
 

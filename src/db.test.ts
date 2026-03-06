@@ -3,11 +3,20 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   createTask,
+  deleteSession,
   deleteTask,
+  getAuditLogs,
   getAllChats,
   getMessagesSince,
   getNewMessages,
+  getRecentMessageSummary,
+  getSession,
+  getSessionCumulativeTokens,
   getTaskById,
+  getTokenUsageSummary,
+  getWindowedMessagesSince,
+  logAudit,
+  setSession,
   storeChatMetadata,
   storeMessage,
   updateTask,
@@ -386,5 +395,430 @@ describe('task CRUD', () => {
 
     deleteTask('task-3');
     expect(getTaskById('task-3')).toBeUndefined();
+  });
+});
+
+// --- getWindowedMessagesSince ---
+
+describe('getWindowedMessagesSince', () => {
+  beforeEach(() => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+    // Store 10 messages
+    for (let i = 1; i <= 10; i++) {
+      store({
+        id: `w${i}`,
+        chat_jid: 'group@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: 'User',
+        content: `message ${i}`,
+        timestamp: `2024-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+      });
+    }
+  });
+
+  it('returns all messages when count is below max', () => {
+    const result = getWindowedMessagesSince('group@g.us', '', 'Andy', 20);
+    expect(result.messages).toHaveLength(10);
+    expect(result.droppedCount).toBe(0);
+    expect(result.totalCount).toBe(10);
+  });
+
+  it('returns all messages when count equals max', () => {
+    const result = getWindowedMessagesSince('group@g.us', '', 'Andy', 10);
+    expect(result.messages).toHaveLength(10);
+    expect(result.droppedCount).toBe(0);
+    expect(result.totalCount).toBe(10);
+  });
+
+  it('truncates to most recent messages when count exceeds max', () => {
+    const result = getWindowedMessagesSince('group@g.us', '', 'Andy', 3);
+    expect(result.messages).toHaveLength(3);
+    expect(result.droppedCount).toBe(7);
+    expect(result.totalCount).toBe(10);
+    // Should be the last 3 messages
+    expect(result.messages[0].content).toBe('message 8');
+    expect(result.messages[1].content).toBe('message 9');
+    expect(result.messages[2].content).toBe('message 10');
+  });
+
+  it('returns empty when no messages match', () => {
+    const result = getWindowedMessagesSince(
+      'group@g.us',
+      '2024-01-01T00:01:00.000Z',
+      'Andy',
+      50,
+    );
+    expect(result.messages).toHaveLength(0);
+    expect(result.droppedCount).toBe(0);
+    expect(result.totalCount).toBe(0);
+  });
+
+  it('uses default MAX_CONTEXT_MESSAGES when maxMessages not specified', () => {
+    // Default is 50, and we only have 10 messages
+    const result = getWindowedMessagesSince('group@g.us', '', 'Andy');
+    expect(result.messages).toHaveLength(10);
+    expect(result.droppedCount).toBe(0);
+  });
+});
+
+// --- Audit log ---
+
+describe('audit logs', () => {
+  it('logs and retrieves an audit entry', () => {
+    logAudit({
+      id: 'audit-1',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: 'user-1',
+      channel: 'whatsapp',
+      chat_jid: 'group@g.us',
+      action: 'agent_invoked',
+      detail: JSON.stringify({ group: 'main', prompt_length: 100 }),
+      token_input: null,
+      token_output: null,
+      session_id: 'sess-1',
+      duration_ms: null,
+    });
+
+    const logs = getAuditLogs();
+    expect(logs).toHaveLength(1);
+    expect(logs[0].id).toBe('audit-1');
+    expect(logs[0].action).toBe('agent_invoked');
+    expect(logs[0].user_id).toBe('user-1');
+  });
+
+  it('filters by action', () => {
+    logAudit({
+      id: 'audit-2a',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_invoked',
+      detail: null,
+      token_input: null,
+      token_output: null,
+      session_id: null,
+      duration_ms: null,
+    });
+    logAudit({
+      id: 'audit-2b',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 500,
+      token_output: 200,
+      session_id: null,
+      duration_ms: 3000,
+    });
+
+    const invoked = getAuditLogs({ action: 'agent_invoked' });
+    expect(invoked).toHaveLength(1);
+    expect(invoked[0].id).toBe('audit-2a');
+
+    const completed = getAuditLogs({ action: 'agent_completed' });
+    expect(completed).toHaveLength(1);
+    expect(completed[0].id).toBe('audit-2b');
+  });
+
+  it('filters by userId', () => {
+    logAudit({
+      id: 'audit-3a',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: 'user-A',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 100,
+      token_output: 50,
+      session_id: null,
+      duration_ms: 1000,
+    });
+    logAudit({
+      id: 'audit-3b',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      user_id: 'user-B',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 200,
+      token_output: 100,
+      session_id: null,
+      duration_ms: 2000,
+    });
+
+    const logsA = getAuditLogs({ userId: 'user-A' });
+    expect(logsA).toHaveLength(1);
+    expect(logsA[0].user_id).toBe('user-A');
+  });
+});
+
+// --- Token usage summary ---
+
+describe('getTokenUsageSummary', () => {
+  it('sums token usage from agent_completed entries', () => {
+    logAudit({
+      id: 'ts-1',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: 'user-1',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 1000,
+      token_output: 500,
+      session_id: null,
+      duration_ms: 5000,
+    });
+    logAudit({
+      id: 'ts-2',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      user_id: 'user-1',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 2000,
+      token_output: 800,
+      session_id: null,
+      duration_ms: 3000,
+    });
+    // agent_invoked should not count
+    logAudit({
+      id: 'ts-3',
+      timestamp: '2024-01-01T00:00:03.000Z',
+      user_id: 'user-1',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_invoked',
+      detail: null,
+      token_input: null,
+      token_output: null,
+      session_id: null,
+      duration_ms: null,
+    });
+
+    const summary = getTokenUsageSummary();
+    expect(summary.total_input).toBe(3000);
+    expect(summary.total_output).toBe(1300);
+    expect(summary.invocation_count).toBe(2);
+  });
+
+  it('filters by userId', () => {
+    logAudit({
+      id: 'tsu-1',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: 'user-A',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 1000,
+      token_output: 500,
+      session_id: null,
+      duration_ms: 5000,
+    });
+    logAudit({
+      id: 'tsu-2',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      user_id: 'user-B',
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: null,
+      token_input: 3000,
+      token_output: 1000,
+      session_id: null,
+      duration_ms: 4000,
+    });
+
+    const summaryA = getTokenUsageSummary({ userId: 'user-A' });
+    expect(summaryA.total_input).toBe(1000);
+    expect(summaryA.total_output).toBe(500);
+    expect(summaryA.invocation_count).toBe(1);
+  });
+
+  it('returns zeros when no matching entries', () => {
+    const summary = getTokenUsageSummary();
+    expect(summary.total_input).toBe(0);
+    expect(summary.total_output).toBe(0);
+    expect(summary.invocation_count).toBe(0);
+  });
+});
+
+// --- deleteSession ---
+
+describe('deleteSession', () => {
+  it('deletes an existing session', () => {
+    setSession('main', 'sess-123');
+    expect(getSession('main')).toBe('sess-123');
+
+    deleteSession('main');
+    expect(getSession('main')).toBeUndefined();
+  });
+
+  it('is a no-op for non-existent session', () => {
+    deleteSession('nonexistent');
+    expect(getSession('nonexistent')).toBeUndefined();
+  });
+});
+
+// --- getSessionCumulativeTokens ---
+
+describe('getSessionCumulativeTokens', () => {
+  it('sums tokens from agent_completed events for the group', () => {
+    logAudit({
+      id: 'sct-1',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: JSON.stringify({ group: 'main', status: 'success' }),
+      token_input: 5000,
+      token_output: 2000,
+      session_id: null,
+      duration_ms: 1000,
+    });
+    logAudit({
+      id: 'sct-2',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: JSON.stringify({ group: 'main', status: 'success' }),
+      token_input: 3000,
+      token_output: 1000,
+      session_id: null,
+      duration_ms: 2000,
+    });
+
+    const total = getSessionCumulativeTokens('main');
+    expect(total).toBe(11000); // 5000+2000+3000+1000
+  });
+
+  it('resets after session_rotated event', () => {
+    // Tokens before rotation
+    logAudit({
+      id: 'sct-3',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: JSON.stringify({ group: 'main', status: 'success' }),
+      token_input: 10000,
+      token_output: 5000,
+      session_id: null,
+      duration_ms: 1000,
+    });
+
+    // Rotation event
+    logAudit({
+      id: 'sct-4',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'session_rotated',
+      detail: JSON.stringify({ group: 'main', reason: 'test' }),
+      token_input: null,
+      token_output: null,
+      session_id: null,
+      duration_ms: null,
+    });
+
+    // Tokens after rotation
+    logAudit({
+      id: 'sct-5',
+      timestamp: '2024-01-01T00:00:03.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: JSON.stringify({ group: 'main', status: 'success' }),
+      token_input: 1000,
+      token_output: 500,
+      session_id: null,
+      duration_ms: 500,
+    });
+
+    const total = getSessionCumulativeTokens('main');
+    expect(total).toBe(1500); // Only counts after rotation
+  });
+
+  it('returns 0 when no matching events', () => {
+    expect(getSessionCumulativeTokens('main')).toBe(0);
+  });
+
+  it('does not count tokens from other groups', () => {
+    logAudit({
+      id: 'sct-6',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      user_id: null,
+      channel: null,
+      chat_jid: null,
+      action: 'agent_completed',
+      detail: JSON.stringify({ group: 'other-group', status: 'success' }),
+      token_input: 9999,
+      token_output: 9999,
+      session_id: null,
+      duration_ms: 1000,
+    });
+
+    expect(getSessionCumulativeTokens('main')).toBe(0);
+  });
+});
+
+// --- getRecentMessageSummary ---
+
+describe('getRecentMessageSummary', () => {
+  beforeEach(() => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+    for (let i = 1; i <= 8; i++) {
+      store({
+        id: `rms-${i}`,
+        chat_jid: 'group@g.us',
+        sender: 'user@s.whatsapp.net',
+        sender_name: `User${i}`,
+        content: `message ${i}`,
+        timestamp: `2024-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+      });
+    }
+  });
+
+  it('returns last N messages in chronological order', () => {
+    const summary = getRecentMessageSummary('group@g.us', 3);
+    expect(summary).toContain('User6: message 6');
+    expect(summary).toContain('User7: message 7');
+    expect(summary).toContain('User8: message 8');
+    expect(summary).not.toContain('User5');
+    // Check chronological order
+    const lines = summary.split('\n');
+    expect(lines[0]).toContain('message 6');
+    expect(lines[2]).toContain('message 8');
+  });
+
+  it('returns empty string for no messages', () => {
+    expect(getRecentMessageSummary('nonexistent@g.us', 5)).toBe('');
+  });
+
+  it('truncates long message content', () => {
+    store({
+      id: 'rms-long',
+      chat_jid: 'group@g.us',
+      sender: 'user@s.whatsapp.net',
+      sender_name: 'Long',
+      content: 'x'.repeat(500),
+      timestamp: '2024-01-01T00:01:00.000Z',
+    });
+    const summary = getRecentMessageSummary('group@g.us', 1);
+    // Should be truncated to 200 chars for content
+    expect(summary.length).toBeLessThan(300);
   });
 });

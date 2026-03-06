@@ -35,6 +35,8 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  tokenInput?: number;
+  tokenOutput?: number;
 }
 
 interface SessionEntry {
@@ -361,7 +363,7 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean; tokenInput: number; tokenOutput: number }> {
   const stream = new MessageStream();
   stream.push(prompt);
 
@@ -390,6 +392,8 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -461,6 +465,12 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Extract token usage from assistant message if available
+      const usage = (message as { message?: { usage?: { input_tokens?: number; output_tokens?: number } } }).message?.usage;
+      if (usage) {
+        if (usage.input_tokens) totalInputTokens += usage.input_tokens;
+        if (usage.output_tokens) totalOutputTokens += usage.output_tokens;
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
@@ -476,18 +486,20 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''} tokens_in=${totalInputTokens} tokens_out=${totalOutputTokens}`);
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId
+        newSessionId,
+        tokenInput: totalInputTokens || undefined,
+        tokenOutput: totalOutputTokens || undefined,
       });
     }
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}, tokens_in=${totalInputTokens}, tokens_out=${totalOutputTokens}`);
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, tokenInput: totalInputTokens, tokenOutput: totalOutputTokens };
 }
 
 async function main(): Promise<void> {

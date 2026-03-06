@@ -1,3 +1,4 @@
+import { WindowedMessages } from './db.js';
 import { Channel, NewMessage } from './types.js';
 
 export function escapeXml(s: string): string {
@@ -15,6 +16,21 @@ export function formatMessages(messages: NewMessage[]): string {
       `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
   );
   return `<messages>\n${lines.join('\n')}\n</messages>`;
+}
+
+export function formatMessagesWithWindow(windowed: WindowedMessages): string {
+  const lines = windowed.messages.map(
+    (m) =>
+      `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
+  );
+  const parts: string[] = [];
+  if (windowed.droppedCount > 0) {
+    parts.push(
+      `<context-note>${windowed.droppedCount} earlier messages omitted (showing most recent ${windowed.messages.length} of ${windowed.totalCount})</context-note>`,
+    );
+  }
+  parts.push(...lines);
+  return `<messages>\n${parts.join('\n')}\n</messages>`;
 }
 
 export function stripInternalTags(text: string): string {

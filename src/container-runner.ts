@@ -25,6 +25,7 @@ import {
 } from './container-runtime.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
+import { ensureUserDataDir } from './user-data.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -38,6 +39,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  userId?: string;
   secrets?: Record<string, string>;
 }
 
@@ -46,6 +48,8 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  tokenInput?: number;
+  tokenOutput?: number;
 }
 
 interface VolumeMount {
@@ -194,6 +198,16 @@ function buildVolumeMounts(
       isMain,
     );
     mounts.push(...validatedMounts);
+  }
+
+  // Per-user data directory (isolated from other users)
+  if (group.userId) {
+    const userDir = ensureUserDataDir(group.userId);
+    mounts.push({
+      hostPath: userDir,
+      containerPath: '/workspace/user',
+      readonly: false,
+    });
   }
 
   return mounts;

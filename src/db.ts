@@ -2,10 +2,12 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
-import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
+import { ASSISTANT_NAME, DATA_DIR, MAX_CONTEXT_MESSAGES, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  AuditAction,
+  AuditLog,
   AsyncWatch,
   NewMessage,
   RegisteredGroup,
@@ -119,6 +121,23 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_web_conv_user
       ON web_conversations(user_id, last_message_at DESC);
+
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id            TEXT PRIMARY KEY,
+      timestamp     TEXT NOT NULL,
+      user_id       TEXT,
+      channel       TEXT,
+      chat_jid      TEXT,
+      action        TEXT NOT NULL,
+      detail        TEXT,
+      token_input   INTEGER,
+      token_output  INTEGER,
+      session_id    TEXT,
+      duration_ms   INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_audit_user_id ON audit_logs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -139,6 +158,13 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add user_id column to registered_groups (migration for multi-user support)
+  try {
+    database.exec(`ALTER TABLE registered_groups ADD COLUMN user_id TEXT`);
   } catch {
     /* column already exists */
   }
@@ -567,6 +593,7 @@ export function getRegisteredGroup(
         added_at: string;
         container_config: string | null;
         requires_trigger: number | null;
+        user_id: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -588,6 +615,7 @@ export function getRegisteredGroup(
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    userId: row.user_id ?? undefined,
   };
 }
 
@@ -596,8 +624,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -606,6 +634,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
+    group.userId ?? null,
   );
 }
 
@@ -618,6 +647,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     added_at: string;
     container_config: string | null;
     requires_trigger: number | null;
+    user_id: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -638,6 +668,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      userId: row.user_id ?? undefined,
     };
   }
   return result;
@@ -818,6 +849,183 @@ export function updateAsyncWatch(
 
 export function deleteAsyncWatch(id: string): void {
   db.prepare('DELETE FROM async_watches WHERE id = ?').run(id);
+}
+
+// --- Windowed messages ---
+
+export interface WindowedMessages {
+  messages: NewMessage[];
+  droppedCount: number;
+  totalCount: number;
+}
+
+export function getWindowedMessagesSince(
+  chatJid: string,
+  sinceTimestamp: string,
+  botPrefix: string,
+  maxMessages: number = MAX_CONTEXT_MESSAGES,
+): WindowedMessages {
+  const allMessages = getMessagesSince(chatJid, sinceTimestamp, botPrefix);
+  const totalCount = allMessages.length;
+  if (totalCount <= maxMessages) {
+    return { messages: allMessages, droppedCount: 0, totalCount };
+  }
+  return {
+    messages: allMessages.slice(totalCount - maxMessages),
+    droppedCount: totalCount - maxMessages,
+    totalCount,
+  };
+}
+
+// --- Audit log accessors ---
+
+export function logAudit(log: AuditLog): void {
+  db.prepare(
+    `INSERT INTO audit_logs (id, timestamp, user_id, channel, chat_jid, action, detail, token_input, token_output, session_id, duration_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    log.id,
+    log.timestamp,
+    log.user_id,
+    log.channel,
+    log.chat_jid,
+    log.action,
+    log.detail,
+    log.token_input,
+    log.token_output,
+    log.session_id,
+    log.duration_ms,
+  );
+}
+
+export function getAuditLogs(opts?: {
+  action?: AuditAction;
+  userId?: string;
+  since?: string;
+  limit?: number;
+}): AuditLog[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (opts?.action) {
+    conditions.push('action = ?');
+    params.push(opts.action);
+  }
+  if (opts?.userId) {
+    conditions.push('user_id = ?');
+    params.push(opts.userId);
+  }
+  if (opts?.since) {
+    conditions.push('timestamp > ?');
+    params.push(opts.since);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const limit = opts?.limit ?? 100;
+
+  return db
+    .prepare(
+      `SELECT * FROM audit_logs ${where} ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(...params, limit) as AuditLog[];
+}
+
+export interface TokenUsageSummary {
+  total_input: number;
+  total_output: number;
+  invocation_count: number;
+}
+
+export function getTokenUsageSummary(opts?: {
+  userId?: string;
+  since?: string;
+}): TokenUsageSummary {
+  const conditions: string[] = ["action = 'agent_completed'"];
+  const params: unknown[] = [];
+
+  if (opts?.userId) {
+    conditions.push('user_id = ?');
+    params.push(opts.userId);
+  }
+  if (opts?.since) {
+    conditions.push('timestamp > ?');
+    params.push(opts.since);
+  }
+
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  const row = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(token_input), 0) as total_input,
+         COALESCE(SUM(token_output), 0) as total_output,
+         COUNT(*) as invocation_count
+       FROM audit_logs ${where}`,
+    )
+    .get(...params) as TokenUsageSummary;
+
+  return row;
+}
+
+// --- Session rotation helpers ---
+
+export function deleteSession(groupFolder: string): void {
+  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+}
+
+/**
+ * Get cumulative tokens since the last session_rotated event for a group.
+ * Sums token_input + token_output from agent_completed audit logs whose
+ * detail JSON contains the given group folder.
+ */
+export function getSessionCumulativeTokens(groupFolder: string): number {
+  // Find the timestamp of the last session_rotated event for this group
+  const lastRotation = db
+    .prepare(
+      `SELECT timestamp FROM audit_logs
+       WHERE action = 'session_rotated' AND detail LIKE ?
+       ORDER BY timestamp DESC LIMIT 1`,
+    )
+    .get(`%"group":"${groupFolder}"%`) as { timestamp: string } | undefined;
+
+  const sinceTimestamp = lastRotation?.timestamp || '';
+
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(COALESCE(token_input, 0) + COALESCE(token_output, 0)), 0) as total
+       FROM audit_logs
+       WHERE action = 'agent_completed'
+         AND timestamp > ?
+         AND detail LIKE ?`,
+    )
+    .get(sinceTimestamp, `%"group":"${groupFolder}"%`) as { total: number };
+
+  return row.total;
+}
+
+/**
+ * Get recent messages for a chat (for classifier context).
+ * Returns the last N messages as a compact summary string.
+ */
+export function getRecentMessageSummary(
+  chatJid: string,
+  limit: number = 5,
+): string {
+  const rows = db
+    .prepare(
+      `SELECT sender_name, content FROM messages
+       WHERE chat_jid = ? AND content != '' AND content IS NOT NULL
+       ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(chatJid, limit) as Array<{ sender_name: string; content: string }>;
+
+  if (rows.length === 0) return '';
+
+  // Reverse to chronological order and format
+  return rows
+    .reverse()
+    .map((r) => `${r.sender_name}: ${r.content.slice(0, 200)}`)
+    .join('\n');
 }
 
 // --- JSON migration ---

@@ -2,7 +2,7 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { DATA_DIR, MAX_CONCURRENT_CONTAINERS, MAX_CONTAINERS_PER_USER } from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -24,6 +24,7 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  userId?: string;
 }
 
 export class GroupQueue {
@@ -33,6 +34,24 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+  private userActiveCount = new Map<string, number>();
+
+  private isUserAtLimit(userId?: string): boolean {
+    if (!userId) return false;
+    return (this.userActiveCount.get(userId) || 0) >= MAX_CONTAINERS_PER_USER;
+  }
+
+  private incrementUser(userId?: string): void {
+    if (!userId) return;
+    this.userActiveCount.set(userId, (this.userActiveCount.get(userId) || 0) + 1);
+  }
+
+  private decrementUser(userId?: string): void {
+    if (!userId) return;
+    const count = (this.userActiveCount.get(userId) || 1) - 1;
+    if (count <= 0) this.userActiveCount.delete(userId);
+    else this.userActiveCount.set(userId, count);
+  }
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -57,10 +76,11 @@ export class GroupQueue {
     this.processMessagesFn = fn;
   }
 
-  enqueueMessageCheck(groupJid: string): void {
+  enqueueMessageCheck(groupJid: string, userId?: string): void {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupJid);
+    if (userId) state.userId = userId;
 
     if (state.active) {
       state.pendingMessages = true;
@@ -80,15 +100,25 @@ export class GroupQueue {
       return;
     }
 
+    if (this.isUserAtLimit(state.userId)) {
+      state.pendingMessages = true;
+      if (!this.waitingGroups.includes(groupJid)) {
+        this.waitingGroups.push(groupJid);
+      }
+      logger.debug({ groupJid, userId: state.userId }, 'At per-user limit, message queued');
+      return;
+    }
+
     this.runForGroup(groupJid, 'messages').catch((err) =>
       logger.error({ groupJid, err }, 'Unhandled error in runForGroup'),
     );
   }
 
-  enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>): void {
+  enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>, userId?: string): void {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupJid);
+    if (userId) state.userId = userId;
 
     // Prevent double-queuing of the same task
     if (state.pendingTasks.some((t) => t.id === taskId)) {
@@ -114,6 +144,15 @@ export class GroupQueue {
         { groupJid, taskId, activeCount: this.activeCount },
         'At concurrency limit, task queued',
       );
+      return;
+    }
+
+    if (this.isUserAtLimit(state.userId)) {
+      state.pendingTasks.push({ id: taskId, groupJid, fn });
+      if (!this.waitingGroups.includes(groupJid)) {
+        this.waitingGroups.push(groupJid);
+      }
+      logger.debug({ groupJid, taskId, userId: state.userId }, 'At per-user limit, task queued');
       return;
     }
 
@@ -197,6 +236,7 @@ export class GroupQueue {
     state.isTaskContainer = false;
     state.pendingMessages = false;
     this.activeCount++;
+    this.incrementUser(state.userId);
 
     logger.debug(
       { groupJid, reason, activeCount: this.activeCount },
@@ -221,6 +261,7 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      this.decrementUser(state.userId);
       this.drainGroup(groupJid);
     }
   }
@@ -231,6 +272,7 @@ export class GroupQueue {
     state.idleWaiting = false;
     state.isTaskContainer = true;
     this.activeCount++;
+    this.incrementUser(state.userId);
 
     logger.debug(
       { groupJid, taskId: task.id, activeCount: this.activeCount },
@@ -248,6 +290,7 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      this.decrementUser(state.userId);
       this.drainGroup(groupJid);
     }
   }
@@ -308,12 +351,19 @@ export class GroupQueue {
   }
 
   private drainWaiting(): void {
+    const skipped: string[] = [];
     while (
       this.waitingGroups.length > 0 &&
       this.activeCount < MAX_CONCURRENT_CONTAINERS
     ) {
       const nextJid = this.waitingGroups.shift()!;
       const state = this.getGroup(nextJid);
+
+      // Skip groups whose user is already at their per-user limit
+      if (this.isUserAtLimit(state.userId)) {
+        skipped.push(nextJid);
+        continue;
+      }
 
       // Prioritize tasks over messages
       if (state.pendingTasks.length > 0) {
@@ -334,6 +384,25 @@ export class GroupQueue {
       }
       // If neither pending, skip this group
     }
+    // Re-add skipped groups so they get drained when their user frees up
+    this.waitingGroups.push(...skipped);
+  }
+
+  /**
+   * Wait until the group's container becomes idle (notifyIdle called).
+   * Returns true if idle detected, false on timeout.
+   */
+  async waitForIdle(groupJid: string, timeoutMs: number = 30000): Promise<boolean> {
+    const state = this.groups.get(groupJid);
+    if (!state?.active) return true; // Not active = already idle
+
+    const start = Date.now();
+    const pollInterval = 500;
+    while (Date.now() - start < timeoutMs) {
+      if (state.idleWaiting || !state.active) return true;
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+    return false;
   }
 
   async shutdown(_gracePeriodMs: number): Promise<void> {

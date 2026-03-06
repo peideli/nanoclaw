@@ -309,6 +309,7 @@ export class WebChatChannel implements Channel {
       trigger: '',
       added_at: now,
       requiresTrigger: false,
+      userId: payload.sub,
     });
 
     storeChatMetadata(jid, now, title, 'webchat', true);
