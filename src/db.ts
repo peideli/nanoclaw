@@ -675,7 +675,13 @@ export function getWebUserByUsername(username: string): WebUser | undefined {
 export function createWebConversation(conv: WebConversation): void {
   db.prepare(
     `INSERT INTO web_conversations (id, user_id, title, created_at, last_message_at) VALUES (?, ?, ?, ?, ?)`,
-  ).run(conv.id, conv.user_id, conv.title, conv.created_at, conv.last_message_at);
+  ).run(
+    conv.id,
+    conv.user_id,
+    conv.title,
+    conv.created_at,
+    conv.last_message_at,
+  );
 }
 
 export function getWebConversationsByUser(userId: string): WebConversation[] {
@@ -701,7 +707,10 @@ export function touchWebConversation(id: string): void {
   ).run(new Date().toISOString(), id);
 }
 
-export function getWebConversationMessages(convId: string, limit = 100): Array<{
+export function getWebConversationMessages(
+  convId: string,
+  limit = 100,
+): Array<{
   id: string;
   sender: string;
   sender_name: string;
@@ -731,7 +740,10 @@ export function getWebConversationMessages(convId: string, limit = 100): Array<{
 // --- Async watch accessors ---
 
 export function createAsyncWatch(
-  watch: Omit<AsyncWatch, 'last_checked_at' | 'check_count' | 'status' | 'result' | 'error'>,
+  watch: Omit<
+    AsyncWatch,
+    'last_checked_at' | 'check_count' | 'status' | 'result' | 'error'
+  >,
 ): void {
   db.prepare(
     `INSERT INTO async_watches (id, group_folder, chat_jid, service, label, check_command, poll_interval_ms, created_at, max_checks, status)
@@ -751,19 +763,26 @@ export function createAsyncWatch(
 
 export function getActiveAsyncWatches(): AsyncWatch[] {
   return db
-    .prepare(`SELECT * FROM async_watches WHERE status = 'active' ORDER BY created_at`)
+    .prepare(
+      `SELECT * FROM async_watches WHERE status = 'active' ORDER BY created_at`,
+    )
     .all() as AsyncWatch[];
 }
 
 export function getAsyncWatchById(id: string): AsyncWatch | undefined {
-  return db
-    .prepare('SELECT * FROM async_watches WHERE id = ?')
-    .get(id) as AsyncWatch | undefined;
+  return db.prepare('SELECT * FROM async_watches WHERE id = ?').get(id) as
+    | AsyncWatch
+    | undefined;
 }
 
 export function updateAsyncWatch(
   id: string,
-  updates: Partial<Pick<AsyncWatch, 'last_checked_at' | 'check_count' | 'status' | 'result' | 'error'>>,
+  updates: Partial<
+    Pick<
+      AsyncWatch,
+      'last_checked_at' | 'check_count' | 'status' | 'result' | 'error'
+    >
+  >,
 ): void {
   const fields: string[] = [];
   const values: unknown[] = [];
@@ -792,9 +811,9 @@ export function updateAsyncWatch(
   if (fields.length === 0) return;
 
   values.push(id);
-  db.prepare(
-    `UPDATE async_watches SET ${fields.join(', ')} WHERE id = ?`,
-  ).run(...values);
+  db.prepare(`UPDATE async_watches SET ${fields.join(', ')} WHERE id = ?`).run(
+    ...values,
+  );
 }
 
 export function deleteAsyncWatch(id: string): void {

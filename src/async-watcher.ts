@@ -2,10 +2,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 import { ASYNC_WATCH_POLL_INTERVAL } from './config.js';
-import {
-  getActiveAsyncWatches,
-  updateAsyncWatch,
-} from './db.js';
+import { getActiveAsyncWatches, updateAsyncWatch } from './db.js';
 import { logger } from './logger.js';
 import { AsyncCheckResult } from './types.js';
 
@@ -39,7 +36,10 @@ export function startAsyncWatcher(deps: AsyncWatcherDeps): void {
         }
 
         // Check max_checks limit
-        if (watch.max_checks !== null && watch.check_count >= watch.max_checks) {
+        if (
+          watch.max_checks !== null &&
+          watch.check_count >= watch.max_checks
+        ) {
           const errorMsg = `Task timed out after ${watch.check_count} checks`;
           updateAsyncWatch(watch.id, {
             status: 'failed',
@@ -47,12 +47,17 @@ export function startAsyncWatcher(deps: AsyncWatcherDeps): void {
           });
 
           const label = watch.label || watch.service;
-          await deps.sendMessage(
-            watch.chat_jid,
-            `*${label}* -- task failed\n\n${errorMsg}`,
-          ).catch((err) =>
-            logger.error({ err, watchId: watch.id }, 'Failed to send timeout notification'),
-          );
+          await deps
+            .sendMessage(
+              watch.chat_jid,
+              `*${label}* -- task failed\n\n${errorMsg}`,
+            )
+            .catch((err) =>
+              logger.error(
+                { err, watchId: watch.id },
+                'Failed to send timeout notification',
+              ),
+            );
 
           logger.info({ watchId: watch.id, label }, 'Async watch timed out');
           continue;
@@ -98,12 +103,17 @@ export function startAsyncWatcher(deps: AsyncWatcherDeps): void {
             ? `\n\nResults saved to: ${checkResult.result_dir}`
             : '';
 
-          await deps.sendMessage(
-            watch.chat_jid,
-            `*${label}* -- completed\n\n${summary}${resultDir}`,
-          ).catch((err) =>
-            logger.error({ err, watchId: watch.id }, 'Failed to send completion notification'),
-          );
+          await deps
+            .sendMessage(
+              watch.chat_jid,
+              `*${label}* -- completed\n\n${summary}${resultDir}`,
+            )
+            .catch((err) =>
+              logger.error(
+                { err, watchId: watch.id },
+                'Failed to send completion notification',
+              ),
+            );
 
           logger.info(
             { watchId: watch.id, label, checkCount: watch.check_count + 1 },
@@ -117,14 +127,22 @@ export function startAsyncWatcher(deps: AsyncWatcherDeps): void {
           });
 
           const label = watch.label || watch.service;
-          await deps.sendMessage(
-            watch.chat_jid,
-            `*${label}* -- task failed\n\n${checkResult.error}`,
-          ).catch((err) =>
-            logger.error({ err, watchId: watch.id }, 'Failed to send error notification'),
-          );
+          await deps
+            .sendMessage(
+              watch.chat_jid,
+              `*${label}* -- task failed\n\n${checkResult.error}`,
+            )
+            .catch((err) =>
+              logger.error(
+                { err, watchId: watch.id },
+                'Failed to send error notification',
+              ),
+            );
 
-          logger.info({ watchId: watch.id, label }, 'Async watch failed with error from check');
+          logger.info(
+            { watchId: watch.id, label },
+            'Async watch failed with error from check',
+          );
         } else {
           logger.debug(
             { watchId: watch.id, checkCount: watch.check_count + 1 },

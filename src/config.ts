@@ -7,8 +7,11 @@ import { readEnvFile } from './env.js';
 // Secrets are NOT read here — they stay on disk and are loaded only
 // where needed (container-runner.ts) to avoid leaking to child processes.
 const envConfig = readEnvFile([
-  'ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER',
-  'WEB_ENABLED', 'WEB_PORT', 'WEB_JWT_SECRET',
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'WEB_ENABLED',
+  'WEB_PORT',
+  'WEB_JWT_SECRET',
 ]);
 
 export const ASSISTANT_NAME =
@@ -56,12 +59,18 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export const WEB_ENABLED = (process.env.WEB_ENABLED || envConfig.WEB_ENABLED) === 'true';
-export const WEB_PORT = parseInt(process.env.WEB_PORT || envConfig.WEB_PORT || '3000', 10);
-export const WEB_JWT_SECRET = process.env.WEB_JWT_SECRET || envConfig.WEB_JWT_SECRET || '';
+export const WEB_ENABLED =
+  (process.env.WEB_ENABLED || envConfig.WEB_ENABLED) === 'true';
+export const WEB_PORT = parseInt(
+  process.env.WEB_PORT || envConfig.WEB_PORT || '3000',
+  10,
+);
+export const WEB_JWT_SECRET =
+  process.env.WEB_JWT_SECRET || envConfig.WEB_JWT_SECRET || '';
 
 export const ASYNC_WATCH_POLL_INTERVAL = parseInt(
-  process.env.ASYNC_WATCH_POLL_INTERVAL || '10000', 10,
+  process.env.ASYNC_WATCH_POLL_INTERVAL || '10000',
+  10,
 );
 
 export const TRIGGER_PATTERN = new RegExp(

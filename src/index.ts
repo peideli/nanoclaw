@@ -525,7 +525,10 @@ async function main(): Promise<void> {
     sendMessage: async (jid, text) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
-        logger.warn({ jid }, 'No channel owns JID, cannot send async notification');
+        logger.warn(
+          { jid },
+          'No channel owns JID, cannot send async notification',
+        );
         return;
       }
       await channel.sendMessage(jid, text);

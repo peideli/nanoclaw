@@ -98,9 +98,9 @@ export interface AsyncWatch {
   id: string;
   group_folder: string;
   chat_jid: string;
-  service: string;         // 'cellcog', 'custom', etc.
+  service: string; // 'cellcog', 'custom', etc.
   label: string | null;
-  check_command: string;   // shell command → stdout JSON {"done": bool, ...}
+  check_command: string; // shell command → stdout JSON {"done": bool, ...}
   poll_interval_ms: number;
   created_at: string;
   last_checked_at: string | null;

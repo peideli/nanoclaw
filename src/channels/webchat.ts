@@ -27,10 +27,10 @@ const WEB_DIR = path.resolve(process.cwd(), 'web');
 // MIME types for static files
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
-  '.css':  'text/css; charset=utf-8',
-  '.js':   'application/javascript; charset=utf-8',
-  '.png':  'image/png',
-  '.ico':  'image/x-icon',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon',
 };
 
 interface AuthenticatedClient {
@@ -41,7 +41,7 @@ interface AuthenticatedClient {
 }
 
 interface JwtPayload {
-  sub: string;   // userId
+  sub: string; // userId
   username: string;
 }
 
@@ -52,8 +52,8 @@ export interface WebChatChannelOpts {
 export class WebChatChannel implements Channel {
   name = 'webchat';
 
-  private clients  = new Map<string, AuthenticatedClient>(); // sessionId → client
-  private jidSubs  = new Map<string, Set<string>>();          // jid → Set<sessionId>
+  private clients = new Map<string, AuthenticatedClient>(); // sessionId → client
+  private jidSubs = new Map<string, Set<string>>(); // jid → Set<sessionId>
   private server!: http.Server;
   private wss!: WebSocketServer;
   private opts: WebChatChannelOpts;
@@ -137,7 +137,10 @@ export class WebChatChannel implements Channel {
 
   // --- HTTP handler ---
 
-  private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async handleHttp(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     const url = new URL(req.url || '/', `http://localhost`);
     const pathname = url.pathname;
     const method = req.method || 'GET';
@@ -155,7 +158,9 @@ export class WebChatChannel implements Channel {
     if (pathname === '/api/conversations' && method === 'POST') {
       return this.handleCreateConversation(req, res);
     }
-    const msgMatch = pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/);
+    const msgMatch = pathname.match(
+      /^\/api\/conversations\/([^/]+)\/messages$/,
+    );
     if (msgMatch && method === 'GET') {
       return this.handleGetMessages(req, res, msgMatch[1]);
     }
@@ -169,8 +174,11 @@ export class WebChatChannel implements Channel {
       let data = '';
       req.on('data', (chunk) => (data += chunk));
       req.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { reject(new Error('Invalid JSON')); }
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          reject(new Error('Invalid JSON'));
+        }
       });
       req.on('error', reject);
     });
@@ -192,14 +200,22 @@ export class WebChatChannel implements Channel {
     res.end(payload);
   }
 
-  private async handleRegister(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async handleRegister(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     let body: { username?: string; password?: string };
-    try { body = await this.readBody(req) as typeof body; }
-    catch { return this.json(res, 400, { error: 'Invalid JSON' }); }
+    try {
+      body = (await this.readBody(req)) as typeof body;
+    } catch {
+      return this.json(res, 400, { error: 'Invalid JSON' });
+    }
 
     const { username, password } = body;
     if (!username || !password || username.length < 2 || password.length < 6) {
-      return this.json(res, 400, { error: 'Username ≥ 2 chars, password ≥ 6 chars' });
+      return this.json(res, 400, {
+        error: 'Username ≥ 2 chars, password ≥ 6 chars',
+      });
     }
     if (getWebUserByUsername(username)) {
       return this.json(res, 409, { error: 'Username already taken' });
@@ -207,16 +223,29 @@ export class WebChatChannel implements Channel {
 
     const id = randomUUID();
     const password_hash = await bcrypt.hash(password, 10);
-    createWebUser({ id, username, password_hash, created_at: new Date().toISOString() });
+    createWebUser({
+      id,
+      username,
+      password_hash,
+      created_at: new Date().toISOString(),
+    });
 
-    const token = jwt.sign({ sub: id, username }, WEB_JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ sub: id, username }, WEB_JWT_SECRET, {
+      expiresIn: '30d',
+    });
     return this.json(res, 201, { token, username });
   }
 
-  private async handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async handleLogin(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     let body: { username?: string; password?: string };
-    try { body = await this.readBody(req) as typeof body; }
-    catch { return this.json(res, 400, { error: 'Invalid JSON' }); }
+    try {
+      body = (await this.readBody(req)) as typeof body;
+    } catch {
+      return this.json(res, 400, { error: 'Invalid JSON' });
+    }
 
     const { username, password } = body;
     if (!username || !password) {
@@ -229,11 +258,16 @@ export class WebChatChannel implements Channel {
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return this.json(res, 401, { error: 'Invalid credentials' });
 
-    const token = jwt.sign({ sub: user.id, username }, WEB_JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ sub: user.id, username }, WEB_JWT_SECRET, {
+      expiresIn: '30d',
+    });
     return this.json(res, 200, { token, username });
   }
 
-  private handleGetConversations(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private handleGetConversations(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
     const payload = this.verifyJwt(req);
     if (!payload) return this.json(res, 401, { error: 'Unauthorized' });
 
@@ -241,13 +275,19 @@ export class WebChatChannel implements Channel {
     return this.json(res, 200, convs);
   }
 
-  private async handleCreateConversation(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async handleCreateConversation(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     const payload = this.verifyJwt(req);
     if (!payload) return this.json(res, 401, { error: 'Unauthorized' });
 
     let body: { title?: string };
-    try { body = await this.readBody(req) as typeof body; }
-    catch { return this.json(res, 400, { error: 'Invalid JSON' }); }
+    try {
+      body = (await this.readBody(req)) as typeof body;
+    } catch {
+      return this.json(res, 400, { error: 'Invalid JSON' });
+    }
 
     const convId = randomUUID().replace(/-/g, '').slice(0, 16);
     const folder = `webchat-${convId}`;
@@ -273,10 +313,19 @@ export class WebChatChannel implements Channel {
 
     storeChatMetadata(jid, now, title, 'webchat', true);
 
-    return this.json(res, 201, { id: convId, title, created_at: now, last_message_at: now });
+    return this.json(res, 201, {
+      id: convId,
+      title,
+      created_at: now,
+      last_message_at: now,
+    });
   }
 
-  private handleGetMessages(req: http.IncomingMessage, res: http.ServerResponse, convId: string): void {
+  private handleGetMessages(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    convId: string,
+  ): void {
     const payload = this.verifyJwt(req);
     if (!payload) return this.json(res, 401, { error: 'Unauthorized' });
 
@@ -284,12 +333,16 @@ export class WebChatChannel implements Channel {
     if (!conv) return this.json(res, 404, { error: 'Not found' });
 
     const msgs = getWebConversationMessages(convId).reverse();
-    return this.json(res, 200, msgs.map((m) => ({
-      id: m.id,
-      role: m.is_bot_message ? 'assistant' : 'user',
-      content: m.content,
-      timestamp: m.timestamp,
-    })));
+    return this.json(
+      res,
+      200,
+      msgs.map((m) => ({
+        id: m.id,
+        role: m.is_bot_message ? 'assistant' : 'user',
+        content: m.content,
+        timestamp: m.timestamp,
+      })),
+    );
   }
 
   private serveStatic(pathname: string, res: http.ServerResponse): void {
