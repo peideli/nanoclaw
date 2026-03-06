@@ -92,6 +92,33 @@ export interface Channel {
 // Callback type that channels use to deliver inbound messages
 export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
+// --- Async Watch types ---
+
+export interface AsyncWatch {
+  id: string;
+  group_folder: string;
+  chat_jid: string;
+  service: string;         // 'cellcog', 'custom', etc.
+  label: string | null;
+  check_command: string;   // shell command → stdout JSON {"done": bool, ...}
+  poll_interval_ms: number;
+  created_at: string;
+  last_checked_at: string | null;
+  check_count: number;
+  max_checks: number | null;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  result: string | null;
+  error: string | null;
+}
+
+export interface AsyncCheckResult {
+  done: boolean;
+  summary?: string;
+  result_dir?: string;
+  error?: string;
+  [key: string]: unknown;
+}
+
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
 // channels that sync names separately (WhatsApp syncGroupMetadata) omit it.

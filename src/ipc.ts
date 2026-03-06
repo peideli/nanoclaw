@@ -10,7 +10,15 @@ import {
   TIMEZONE,
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import {
+  createAsyncWatch,
+  createTask,
+  deleteTask,
+  getAsyncWatchById,
+  getTaskById,
+  updateAsyncWatch,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -170,6 +178,13 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For watch_async_task / cancel_watch
+    watchId?: string;
+    service?: string;
+    label?: string;
+    check_command?: string;
+    poll_interval_ms?: number;
+    max_checks?: number;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -381,7 +396,74 @@ export async function processTaskIpc(
       }
       break;
 
+    case 'watch_async_task':
+      if (data.check_command && data.service) {
+        // Resolve chat_jid from sourceGroup
+        const watchChatJid = chatJidFromGroup(sourceGroup, registeredGroups);
+        if (!watchChatJid) {
+          logger.warn(
+            { sourceGroup },
+            'Cannot create async watch: no registered chat JID for group',
+          );
+          break;
+        }
+
+        const watchId =
+          data.watchId ||
+          `watch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        createAsyncWatch({
+          id: watchId,
+          group_folder: sourceGroup,
+          chat_jid: watchChatJid,
+          service: data.service,
+          label: data.label || null,
+          check_command: data.check_command,
+          poll_interval_ms: data.poll_interval_ms || 30000,
+          created_at: new Date().toISOString(),
+          max_checks: data.max_checks ?? null,
+        });
+        logger.info(
+          { watchId, sourceGroup, service: data.service },
+          'Async watch created via IPC',
+        );
+      } else {
+        logger.warn(
+          { data: { type: data.type, service: data.service } },
+          'Invalid watch_async_task: missing check_command or service',
+        );
+      }
+      break;
+
+    case 'cancel_watch':
+      if (data.watchId) {
+        const watch = getAsyncWatchById(data.watchId);
+        if (watch && (isMain || watch.group_folder === sourceGroup)) {
+          updateAsyncWatch(data.watchId, { status: 'cancelled' });
+          logger.info(
+            { watchId: data.watchId, sourceGroup },
+            'Async watch cancelled via IPC',
+          );
+        } else {
+          logger.warn(
+            { watchId: data.watchId, sourceGroup },
+            'Unauthorized or not found: cancel_watch attempt',
+          );
+        }
+      }
+      break;
+
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
   }
+}
+
+/** Reverse-lookup: find the chat JID for a given group folder. */
+function chatJidFromGroup(
+  groupFolder: string,
+  registeredGroups: Record<string, RegisteredGroup>,
+): string | null {
+  for (const [jid, group] of Object.entries(registeredGroups)) {
+    if (group.folder === groupFolder) return jid;
+  }
+  return null;
 }

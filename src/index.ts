@@ -7,8 +7,11 @@ import {
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
+  WEB_ENABLED,
+  WEB_PORT,
 } from './config.js';
 import { WhatsAppChannel } from './channels/whatsapp.js';
+import { WebChatChannel } from './channels/webchat.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -36,6 +39,7 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { startAsyncWatcher } from './async-watcher.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
@@ -479,6 +483,13 @@ async function main(): Promise<void> {
   channels.push(whatsapp);
   await whatsapp.connect();
 
+  if (WEB_ENABLED) {
+    const webchat = new WebChatChannel({ registerGroup });
+    channels.push(webchat);
+    await webchat.connect();
+    logger.info({ port: WEB_PORT }, 'WebChat channel started');
+  }
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
@@ -509,6 +520,16 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+  });
+  startAsyncWatcher({
+    sendMessage: async (jid, text) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) {
+        logger.warn({ jid }, 'No channel owns JID, cannot send async notification');
+        return;
+      }
+      await channel.sendMessage(jid, text);
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

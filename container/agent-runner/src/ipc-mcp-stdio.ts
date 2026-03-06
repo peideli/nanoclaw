@@ -280,6 +280,66 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+server.tool(
+  'watch_async_task',
+  `Register an async task watch. The host process will poll the check_command and notify the user when done.
+
+Use this after submitting a long-running task (e.g., CellCog deep research) so the user gets notified even after the container shuts down.
+
+The check_command must be a shell command that outputs JSON to stdout: {"done": boolean, "summary"?: string, "result_dir"?: string, "error"?: string}`,
+  {
+    service: z.string().describe('Service name, e.g. "cellcog"'),
+    check_command: z.string().describe('Shell command that outputs JSON {"done": bool, "summary"?: string, "result_dir"?: string}'),
+    label: z.string().optional().describe('Human-readable label for notifications (e.g. "EV Market Analysis Report")'),
+    poll_interval_ms: z.number().optional().default(30000).describe('How often to poll in ms (default: 30000)'),
+    max_checks: z.number().optional().describe('Max number of checks before timing out (default: unlimited)'),
+  },
+  async (args) => {
+    const watchId = `watch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const data = {
+      type: 'watch_async_task',
+      watchId,
+      service: args.service,
+      check_command: args.check_command,
+      label: args.label || null,
+      poll_interval_ms: args.poll_interval_ms,
+      max_checks: args.max_checks || null,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Async watch registered (${watchId}). The host will poll and notify the user when the task completes.` }],
+    };
+  },
+);
+
+server.tool(
+  'cancel_watch',
+  'Cancel an active async task watch.',
+  {
+    watch_id: z.string().describe('The watch ID to cancel'),
+  },
+  async (args) => {
+    const data = {
+      type: 'cancel_watch',
+      watchId: args.watch_id,
+      groupFolder,
+      isMain,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Watch ${args.watch_id} cancellation requested.` }],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

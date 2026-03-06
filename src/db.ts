@@ -6,6 +6,7 @@ import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
+  AsyncWatch,
   NewMessage,
   RegisteredGroup,
   ScheduledTask,
@@ -82,6 +83,42 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS async_watches (
+      id TEXT PRIMARY KEY,
+      group_folder TEXT NOT NULL,
+      chat_jid TEXT NOT NULL,
+      service TEXT NOT NULL,
+      label TEXT,
+      check_command TEXT NOT NULL,
+      poll_interval_ms INTEGER NOT NULL DEFAULT 30000,
+      created_at TEXT NOT NULL,
+      last_checked_at TEXT,
+      check_count INTEGER DEFAULT 0,
+      max_checks INTEGER,
+      status TEXT DEFAULT 'active',
+      result TEXT,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_async_watches_status ON async_watches(status);
+
+    CREATE TABLE IF NOT EXISTS web_users (
+      id           TEXT PRIMARY KEY,
+      username     TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at   TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS web_conversations (
+      id              TEXT PRIMARY KEY,
+      user_id         TEXT NOT NULL,
+      title           TEXT NOT NULL,
+      created_at      TEXT NOT NULL,
+      last_message_at TEXT NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES web_users(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_web_conv_user
+      ON web_conversations(user_id, last_message_at DESC);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -604,6 +641,164 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Web chat accessors ---
+
+export interface WebUser {
+  id: string;
+  username: string;
+  password_hash: string;
+  created_at: string;
+}
+
+export interface WebConversation {
+  id: string;
+  user_id: string;
+  title: string;
+  created_at: string;
+  last_message_at: string;
+}
+
+export function createWebUser(user: WebUser): void {
+  db.prepare(
+    `INSERT INTO web_users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)`,
+  ).run(user.id, user.username, user.password_hash, user.created_at);
+}
+
+export function getWebUserByUsername(username: string): WebUser | undefined {
+  return db
+    .prepare(`SELECT * FROM web_users WHERE username = ?`)
+    .get(username) as WebUser | undefined;
+}
+
+export function createWebConversation(conv: WebConversation): void {
+  db.prepare(
+    `INSERT INTO web_conversations (id, user_id, title, created_at, last_message_at) VALUES (?, ?, ?, ?, ?)`,
+  ).run(conv.id, conv.user_id, conv.title, conv.created_at, conv.last_message_at);
+}
+
+export function getWebConversationsByUser(userId: string): WebConversation[] {
+  return db
+    .prepare(
+      `SELECT * FROM web_conversations WHERE user_id = ? ORDER BY last_message_at DESC`,
+    )
+    .all(userId) as WebConversation[];
+}
+
+export function getWebConversation(
+  id: string,
+  userId: string,
+): WebConversation | undefined {
+  return db
+    .prepare(`SELECT * FROM web_conversations WHERE id = ? AND user_id = ?`)
+    .get(id, userId) as WebConversation | undefined;
+}
+
+export function touchWebConversation(id: string): void {
+  db.prepare(
+    `UPDATE web_conversations SET last_message_at = ? WHERE id = ?`,
+  ).run(new Date().toISOString(), id);
+}
+
+export function getWebConversationMessages(convId: string, limit = 100): Array<{
+  id: string;
+  sender: string;
+  sender_name: string;
+  content: string;
+  timestamp: string;
+  is_from_me: number;
+  is_bot_message: number;
+}> {
+  const jid = `webchat-${convId}@webchat`;
+  return db
+    .prepare(
+      `SELECT id, sender, sender_name, content, timestamp, is_from_me, is_bot_message
+       FROM messages WHERE chat_jid = ?
+       ORDER BY timestamp DESC LIMIT ?`,
+    )
+    .all(jid, limit) as Array<{
+    id: string;
+    sender: string;
+    sender_name: string;
+    content: string;
+    timestamp: string;
+    is_from_me: number;
+    is_bot_message: number;
+  }>;
+}
+
+// --- Async watch accessors ---
+
+export function createAsyncWatch(
+  watch: Omit<AsyncWatch, 'last_checked_at' | 'check_count' | 'status' | 'result' | 'error'>,
+): void {
+  db.prepare(
+    `INSERT INTO async_watches (id, group_folder, chat_jid, service, label, check_command, poll_interval_ms, created_at, max_checks, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')`,
+  ).run(
+    watch.id,
+    watch.group_folder,
+    watch.chat_jid,
+    watch.service,
+    watch.label,
+    watch.check_command,
+    watch.poll_interval_ms,
+    watch.created_at,
+    watch.max_checks,
+  );
+}
+
+export function getActiveAsyncWatches(): AsyncWatch[] {
+  return db
+    .prepare(`SELECT * FROM async_watches WHERE status = 'active' ORDER BY created_at`)
+    .all() as AsyncWatch[];
+}
+
+export function getAsyncWatchById(id: string): AsyncWatch | undefined {
+  return db
+    .prepare('SELECT * FROM async_watches WHERE id = ?')
+    .get(id) as AsyncWatch | undefined;
+}
+
+export function updateAsyncWatch(
+  id: string,
+  updates: Partial<Pick<AsyncWatch, 'last_checked_at' | 'check_count' | 'status' | 'result' | 'error'>>,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.last_checked_at !== undefined) {
+    fields.push('last_checked_at = ?');
+    values.push(updates.last_checked_at);
+  }
+  if (updates.check_count !== undefined) {
+    fields.push('check_count = ?');
+    values.push(updates.check_count);
+  }
+  if (updates.status !== undefined) {
+    fields.push('status = ?');
+    values.push(updates.status);
+  }
+  if (updates.result !== undefined) {
+    fields.push('result = ?');
+    values.push(updates.result);
+  }
+  if (updates.error !== undefined) {
+    fields.push('error = ?');
+    values.push(updates.error);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(
+    `UPDATE async_watches SET ${fields.join(', ')} WHERE id = ?`,
+  ).run(...values);
+}
+
+export function deleteAsyncWatch(id: string): void {
+  db.prepare('DELETE FROM async_watches WHERE id = ?').run(id);
 }
 
 // --- JSON migration ---

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NanoClaw Chat</title>
+  <link rel="stylesheet" href="/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+<!-- Login page -->
+<div id="login-page">
+  <div class="login-box">
+    <div class="login-logo">⚡ NanoClaw</div>
+    <h2 id="auth-title">登录</h2>
+    <div class="form-group">
+      <input id="auth-username" type="text" placeholder="用户名" autocomplete="username" />
+    </div>
+    <div class="form-group">
+      <input id="auth-password" type="password" placeholder="密码" autocomplete="current-password" />
+    </div>
+    <div id="auth-error" class="auth-error"></div>
+    <button id="auth-submit" class="btn-primary">登录</button>
+    <p class="auth-toggle">
+      没有账号？<a href="#" id="toggle-auth">注册</a>
+    </p>
+  </div>
+</div>
+
+<!-- Main app -->
+<div id="app" class="hidden">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <button id="new-chat-btn" class="new-chat-btn">
+        <span>＋</span> 新对话
+      </button>
+    </div>
+    <div class="conv-list" id="conv-list">
+      <!-- conversations injected here -->
+    </div>
+    <div class="sidebar-footer">
+      <span id="sidebar-username" class="sidebar-user"></span>
+      <button id="logout-btn" class="logout-btn">退出</button>
+    </div>
+  </aside>
+
+  <!-- Chat area -->
+  <main class="chat-area">
+    <div id="empty-state" class="empty-state">
+      <div class="empty-icon">⚡</div>
+      <p>选择或新建对话开始聊天</p>
+    </div>
+    <div id="messages" class="messages hidden"></div>
+    <div id="typing-indicator" class="typing-indicator hidden">
+      <div class="typing-dots"><span></span><span></span><span></span></div>
+    </div>
+    <div id="input-area" class="input-area hidden">
+      <div class="input-wrapper">
+        <textarea
+          id="msg-input"
+          placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
+          rows="1"
+        ></textarea>
+        <button id="send-btn" class="send-btn">发送</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

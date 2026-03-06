@@ -57,45 +57,50 @@ Keep messages clean and readable for WhatsApp.
 
 Use CellCog for deep research, competitive analysis, investment research, PDFs, dashboards, images, video, and other rich deliverables.
 
-### ⚠️ IMPORTANT: Auto-Check for Completed Tasks
+### Workflow: Submit Task + Register Host Watch
 
-**ALWAYS run the auto-check before starting new CellCog tasks** to detect any completed tasks that may have missed notifications:
+The host process runs 24/7 and can poll for task completion even after the container shuts down. **Always register a watch after submitting a CellCog task.**
 
 ```python
-# Step 1: Auto-check for completed tasks (REQUIRED)
+# Step 1: Auto-check for previously completed tasks (REQUIRED)
 import sys
 sys.path.insert(0, '/workspace/group/.claude/skills/research-cog-auto')
 from auto_check import check_and_report
 check_and_report()
 
-# Step 2: Start new task
+# Step 2: Submit new task
 from cellcog import CellCogClient
 client = CellCogClient()
 result = client.create_chat(
     prompt='your task here',
-    notify_session_key='agent:main:main',
-    task_label='my-task',
     chat_mode='agent',  # or 'agent team' for deep research
 )
-print(result['chat_id'])
+chat_id = result['chat_id']
+print(chat_id)
 ```
+
+Then **immediately** register a host-side watch so the user gets notified:
+
+```
+mcp__nanoclaw__watch_async_task(
+  service="cellcog",
+  label="<descriptive label for the task>",
+  check_command="python3 -c \"from cellcog import CellCogClient; import json; c=CellCogClient(); s=c.get_chat_status('<chat_id>'); print(json.dumps({'done': s.get('status')=='completed', 'summary': s.get('name',''), 'result_dir': '~/.cellcog/chats/<chat_id>/'}))\""
+  poll_interval_ms=30000,
+  max_checks=200
+)
+```
+
+Then tell the user: "I've submitted the task. You'll be notified when it's done."
 
 ### Quick Reference
 
-- `create_chat()` returns immediately — CellCog works in the cloud and notifies you when done
-- Do NOT poll for results; they arrive automatically via `notify_session_key`
+- `create_chat()` returns immediately — CellCog works in the cloud
 - Use `chat_mode="agent team"` for deep research (costs ~4x more, takes 5–60 min, requires ≥500 credits)
 - Use `chat_mode="agent"` (default) for most tasks — fast, handles research well (requires ≥100 credits)
 - Be explicit about output format: "Create a PDF report", "Generate an interactive HTML dashboard"
 - Generated files auto-download to `~/.cellcog/chats/{chat_id}/`
-
-### Notification Issue Workaround
-
-CellCog's WebSocket notification daemon may not auto-restart after container restarts. The `auto_check` module:
-- Checks for completed but unnotified tasks
-- Shows file locations
-- Restarts the notification daemon
-- **Run this before every new CellCog task**
+- **Always register `watch_async_task`** so the host notifies the user when done
 
 ### Manual Check (if needed)
 
@@ -116,8 +121,7 @@ To continue a conversation after receiving the first result:
 python3 -c "
 from cellcog import CellCogClient
 client = CellCogClient()
-client.send_message(chat_id='abc123', message='follow-up instruction',
-    notify_session_key='agent:main:main', task_label='refine')
+client.send_message(chat_id='abc123', message='follow-up instruction')
 "
 ```
 
