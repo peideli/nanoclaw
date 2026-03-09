@@ -7,7 +7,12 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { WebSocketServer, WebSocket } from 'ws';
 
-import { WEB_PORT, WEB_JWT_SECRET, GROUPS_DIR, PROJECT_ROOT } from '../config.js';
+import {
+  WEB_PORT,
+  WEB_JWT_SECRET,
+  GROUPS_DIR,
+  PROJECT_ROOT,
+} from '../config.js';
 import {
   createWebUser,
   createWebConversation,

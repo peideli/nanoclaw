@@ -122,7 +122,10 @@ export interface AsyncCheckResult {
 
 // --- Audit types ---
 
-export type AuditAction = 'agent_invoked' | 'agent_completed' | 'session_rotated';
+export type AuditAction =
+  | 'agent_invoked'
+  | 'agent_completed'
+  | 'session_rotated';
 
 export interface AuditLog {
   id: string;

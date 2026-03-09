@@ -2,7 +2,11 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { DATA_DIR, MAX_CONCURRENT_CONTAINERS, MAX_CONTAINERS_PER_USER } from './config.js';
+import {
+  DATA_DIR,
+  MAX_CONCURRENT_CONTAINERS,
+  MAX_CONTAINERS_PER_USER,
+} from './config.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -43,7 +47,10 @@ export class GroupQueue {
 
   private incrementUser(userId?: string): void {
     if (!userId) return;
-    this.userActiveCount.set(userId, (this.userActiveCount.get(userId) || 0) + 1);
+    this.userActiveCount.set(
+      userId,
+      (this.userActiveCount.get(userId) || 0) + 1,
+    );
   }
 
   private decrementUser(userId?: string): void {
@@ -105,7 +112,10 @@ export class GroupQueue {
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
       }
-      logger.debug({ groupJid, userId: state.userId }, 'At per-user limit, message queued');
+      logger.debug(
+        { groupJid, userId: state.userId },
+        'At per-user limit, message queued',
+      );
       return;
     }
 
@@ -114,7 +124,12 @@ export class GroupQueue {
     );
   }
 
-  enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>, userId?: string): void {
+  enqueueTask(
+    groupJid: string,
+    taskId: string,
+    fn: () => Promise<void>,
+    userId?: string,
+  ): void {
     if (this.shuttingDown) return;
 
     const state = this.getGroup(groupJid);
@@ -152,7 +167,10 @@ export class GroupQueue {
       if (!this.waitingGroups.includes(groupJid)) {
         this.waitingGroups.push(groupJid);
       }
-      logger.debug({ groupJid, taskId, userId: state.userId }, 'At per-user limit, task queued');
+      logger.debug(
+        { groupJid, taskId, userId: state.userId },
+        'At per-user limit, task queued',
+      );
       return;
     }
 
@@ -392,7 +410,10 @@ export class GroupQueue {
    * Wait until the group's container becomes idle (notifyIdle called).
    * Returns true if idle detected, false on timeout.
    */
-  async waitForIdle(groupJid: string, timeoutMs: number = 30000): Promise<boolean> {
+  async waitForIdle(
+    groupJid: string,
+    timeoutMs: number = 30000,
+  ): Promise<boolean> {
     const state = this.groups.get(groupJid);
     if (!state?.active) return true; // Not active = already idle
 

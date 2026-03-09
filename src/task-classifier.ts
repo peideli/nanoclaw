@@ -44,31 +44,25 @@ export async function classifyTaskBoundary(
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      CLASSIFIER_TIMEOUT_MS,
-    );
+    const timeout = setTimeout(() => controller.abort(), CLASSIFIER_TIMEOUT_MS);
 
-    const response = await fetch(
-      `${CLASSIFIER_API_BASE}/v1/chat/completions`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${CLASSIFIER_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: CLASSIFIER_MODEL,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0,
-          max_tokens: 50,
-        }),
-        signal: controller.signal,
+    const response = await fetch(`${CLASSIFIER_API_BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${CLASSIFIER_API_KEY}`,
       },
-    );
+      body: JSON.stringify({
+        model: CLASSIFIER_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0,
+        max_tokens: 50,
+      }),
+      signal: controller.signal,
+    });
 
     clearTimeout(timeout);
 
@@ -97,7 +91,10 @@ export async function classifyTaskBoundary(
     }
 
     const parsed = JSON.parse(jsonMatch[0]) as ClassifierResponse;
-    if (typeof parsed.continuation !== 'boolean' || typeof parsed.confidence !== 'number') {
+    if (
+      typeof parsed.continuation !== 'boolean' ||
+      typeof parsed.confidence !== 'number'
+    ) {
       logger.warn({ parsed }, 'Classifier returned invalid shape');
       return { continuation: true, confidence: 1.0 };
     }

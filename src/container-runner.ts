@@ -67,9 +67,12 @@ const HOST_DATA_DIR = process.env.NANOCLAW_HOST_DATA_DIR || '';
 
 function toHostPath(p: string): string {
   if (!HOST_DATA_DIR) return p; // bare-metal: no translation
-  if (p.startsWith(DATA_DIR)) return p.replace(DATA_DIR, path.join(HOST_DATA_DIR, 'data'));
-  if (p.startsWith(GROUPS_DIR)) return p.replace(GROUPS_DIR, path.join(HOST_DATA_DIR, 'groups'));
-  if (p.startsWith(STORE_DIR)) return p.replace(STORE_DIR, path.join(HOST_DATA_DIR, 'store'));
+  if (p.startsWith(DATA_DIR))
+    return p.replace(DATA_DIR, path.join(HOST_DATA_DIR, 'data'));
+  if (p.startsWith(GROUPS_DIR))
+    return p.replace(GROUPS_DIR, path.join(HOST_DATA_DIR, 'groups'));
+  if (p.startsWith(STORE_DIR))
+    return p.replace(STORE_DIR, path.join(HOST_DATA_DIR, 'store'));
   return p;
 }
 

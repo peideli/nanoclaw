@@ -157,10 +157,7 @@ async function rotateSession(
   chatJid: string,
   reason: string,
 ): Promise<void> {
-  logger.info(
-    { group: group.folder, reason },
-    'Rotating session',
-  );
+  logger.info({ group: group.folder, reason }, 'Rotating session');
 
   // Memory extraction: if the user has a userId (Web Chat) and container is active,
   // send the extraction prompt and wait for it to finish.
@@ -304,12 +301,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.debug(
-        { group: group.name },
-        'Idle timeout, rotating session',
-      );
+      logger.debug({ group: group.name }, 'Idle timeout, rotating session');
       rotateSession(group, chatJid, 'idle_timeout').catch((err) =>
-        logger.error({ group: group.name, err }, 'Error rotating session on idle'),
+        logger.error(
+          { group: group.name, err },
+          'Error rotating session on idle',
+        ),
       );
     }, IDLE_TIMEOUT);
   };
@@ -321,36 +318,45 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // Determine channel name for audit logging
   const auditChannel = channel.name;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info(
+          { group: group.name },
+          `Agent output: ${raw.slice(0, 200)}`,
+        );
+        if (text) {
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  }, {
-    messageCount: windowed.messages.length,
-    droppedCount: windowed.droppedCount,
-    channel: auditChannel,
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+    {
+      messageCount: windowed.messages.length,
+      droppedCount: windowed.droppedCount,
+      channel: auditChannel,
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
