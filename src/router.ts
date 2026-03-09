@@ -1,5 +1,6 @@
 import { WindowedMessages } from './db.js';
 import { Channel, NewMessage } from './types.js';
+import { formatLocalTime } from './timezone.js';
 
 export function escapeXml(s: string): string {
   if (!s) return '';
@@ -10,12 +11,18 @@ export function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-export function formatMessages(messages: NewMessage[]): string {
-  const lines = messages.map(
-    (m) =>
-      `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
-  );
-  return `<messages>\n${lines.join('\n')}\n</messages>`;
+export function formatMessages(
+  messages: NewMessage[],
+  timezone: string,
+): string {
+  const lines = messages.map((m) => {
+    const displayTime = formatLocalTime(m.timestamp, timezone);
+    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}</message>`;
+  });
+
+  const header = `<context timezone="${escapeXml(timezone)}" />\n`;
+
+  return `${header}<messages>\n${lines.join('\n')}\n</messages>`;
 }
 
 export function formatMessagesWithWindow(windowed: WindowedMessages): string {

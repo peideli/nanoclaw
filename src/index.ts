@@ -4,15 +4,21 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
-  MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
   SESSION_TOKEN_THRESHOLD,
+  TIMEZONE,
   TRIGGER_PATTERN,
   WEB_ENABLED,
   WEB_PORT,
 } from './config.js';
-import { WhatsAppChannel } from './channels/whatsapp.js';
+import { startCredentialProxy } from './credential-proxy.js';
+import './channels/index.js';
+import {
+  getChannelFactory,
+  getRegisteredChannelNames,
+} from './channels/registry.js';
 import { WebChatChannel } from './channels/webchat.js';
 import {
   ContainerOutput,
@@ -23,6 +29,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
   deleteSession,
@@ -33,6 +40,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getRecentMessageSummary,
+  getRegisteredGroup,
   getRouterState,
   getSessionCumulativeTokens,
   getWindowedMessagesSince,
@@ -54,6 +62,12 @@ import {
   formatMessagesWithWindow,
   formatOutbound,
 } from './router.js';
+import {
+  isSenderAllowed,
+  isTriggerAllowed,
+  loadSenderAllowlist,
+  shouldDropMessage,
+} from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import {
   isClassifierEnabled,
@@ -71,7 +85,6 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -254,7 +267,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+  const isMainGroup = group.isMain === true;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const windowed = getWindowedMessagesSince(
@@ -267,13 +280,16 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const hasTrigger = windowed.messages.some((m) =>
-      TRIGGER_PATTERN.test(m.content.trim()),
+    const allowlistCfg = loadSenderAllowlist();
+    const hasTrigger = windowed.messages.some(
+      (m) =>
+        TRIGGER_PATTERN.test(m.content.trim()) &&
+        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
   }
 
-  const prompt = formatMessagesWithWindow(windowed);
+  const prompt = formatMessagesWithWindow(windowed, TIMEZONE);
 
   // Check classifier: if this looks like a new task, rotate session first
   const lastMessage = windowed.messages[windowed.messages.length - 1];
@@ -394,7 +410,7 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
   auditMeta?: { messageCount: number; droppedCount: number; channel?: string },
 ): Promise<'success' | 'error'> {
-  const isMain = group.folder === MAIN_GROUP_FOLDER;
+  const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
   const agentStartTime = Date.now();
 
@@ -584,15 +600,19 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+          const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const hasTrigger = groupMessages.some((m) =>
-              TRIGGER_PATTERN.test(m.content.trim()),
+            const allowlistCfg = loadSenderAllowlist();
+            const hasTrigger = groupMessages.some(
+              (m) =>
+                TRIGGER_PATTERN.test(m.content.trim()) &&
+                (m.is_from_me ||
+                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
             if (!hasTrigger) continue;
           }
@@ -610,8 +630,8 @@ async function startMessageLoop(): Promise<void> {
               : groupMessages;
           const formatted =
             allPendingWindowed.messages.length > 0
-              ? formatMessagesWithWindow(allPendingWindowed)
-              : formatMessages(groupMessages);
+              ? formatMessagesWithWindow(allPendingWindowed, TIMEZONE)
+              : formatMessages(groupMessages, TIMEZONE);
 
           // Check classifier: if new task detected, rotate and enqueue fresh
           const lastMsg = messagesToSend[messagesToSend.length - 1];
@@ -679,9 +699,16 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Start credential proxy (containers route API calls through this)
+  const proxyServer = await startCredentialProxy(
+    CREDENTIAL_PROXY_PORT,
+    PROXY_BIND_HOST,
+  );
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -691,7 +718,25 @@ async function main(): Promise<void> {
 
   // Channel callbacks (shared by all channels)
   const channelOpts = {
-    onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
+    onMessage: (chatJid: string, msg: NewMessage) => {
+      // Sender allowlist drop mode: discard messages from denied senders before storing
+      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+        const cfg = loadSenderAllowlist();
+        if (
+          shouldDropMessage(chatJid, cfg) &&
+          !isSenderAllowed(chatJid, msg.sender, cfg)
+        ) {
+          if (cfg.logDenied) {
+            logger.debug(
+              { chatJid, sender: msg.sender },
+              'sender-allowlist: dropping message (drop mode)',
+            );
+          }
+          return;
+        }
+      }
+      storeMessage(msg);
+    },
     onChatMetadata: (
       chatJid: string,
       timestamp: string,
@@ -702,10 +747,26 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels
-  whatsapp = new WhatsAppChannel(channelOpts);
-  channels.push(whatsapp);
-  await whatsapp.connect();
+  // Create and connect all registered channels.
+  // Each channel self-registers via the barrel import above.
+  // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  for (const channelName of getRegisteredChannelNames()) {
+    const factory = getChannelFactory(channelName)!;
+    const channel = factory(channelOpts);
+    if (!channel) {
+      logger.warn(
+        { channel: channelName },
+        'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
+      );
+      continue;
+    }
+    channels.push(channel);
+    await channel.connect();
+  }
+  if (channels.length === 0) {
+    logger.fatal('No channels connected');
+    process.exit(1);
+  }
 
   if (WEB_ENABLED) {
     const webchat = new WebChatChannel({ registerGroup });
@@ -739,8 +800,13 @@ async function main(): Promise<void> {
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) =>
-      whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroups: async (force: boolean) => {
+      await Promise.all(
+        channels
+          .filter((ch) => ch.syncGroups)
+          .map((ch) => ch.syncGroups!(force)),
+      );
+    },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
