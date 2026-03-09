@@ -43,6 +43,8 @@ import {
   getRegisteredGroup,
   getRouterState,
   getSessionCumulativeTokens,
+  getWebUserById,
+  getUserMonthlyTokenUsage,
   getWindowedMessagesSince,
   initDatabase,
   logAudit,
@@ -277,6 +279,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   );
 
   if (windowed.messages.length === 0) return true;
+
+  // Quota check for WebChat users (non-owner)
+  if (group.userId) {
+    const quotaUser = getWebUserById(group.userId);
+    if (quotaUser && quotaUser.role !== 'owner') {
+      const usage = getUserMonthlyTokenUsage(group.userId);
+      if (usage >= quotaUser.monthly_quota) {
+        await channel.sendMessage(chatJid, '本月额度已用完，请联系管理员。');
+        return true;
+      }
+    }
+  }
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {

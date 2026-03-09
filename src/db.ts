@@ -187,6 +187,43 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add RBAC columns to web_users (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE web_users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE web_users ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+    );
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(
+      `ALTER TABLE web_users ADD COLUMN monthly_quota INTEGER NOT NULL DEFAULT 500000`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Auto-promote: if there's exactly 1 user and they're a member, make them owner
+  try {
+    const count = database
+      .prepare(`SELECT COUNT(*) as cnt FROM web_users`)
+      .get() as { cnt: number } | undefined;
+    if (count && count.cnt === 1) {
+      database.exec(
+        `UPDATE web_users SET role = 'owner' WHERE role = 'member'`,
+      );
+    }
+  } catch {
+    /* table might not exist yet */
+  }
+
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
     database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
@@ -714,6 +751,9 @@ export interface WebUser {
   username: string;
   password_hash: string;
   created_at: string;
+  role: 'owner' | 'member';
+  enabled: number; // 0 | 1
+  monthly_quota: number;
 }
 
 export interface WebConversation {
@@ -734,6 +774,70 @@ export function getWebUserByUsername(username: string): WebUser | undefined {
   return db
     .prepare(`SELECT * FROM web_users WHERE username = ?`)
     .get(username) as WebUser | undefined;
+}
+
+export function getWebUserById(id: string): WebUser | undefined {
+  return db.prepare(`SELECT * FROM web_users WHERE id = ?`).get(id) as
+    | WebUser
+    | undefined;
+}
+
+export function getAllWebUsers(): WebUser[] {
+  return db
+    .prepare(`SELECT * FROM web_users ORDER BY created_at`)
+    .all() as WebUser[];
+}
+
+export function updateWebUser(
+  id: string,
+  updates: Partial<Pick<WebUser, 'role' | 'enabled' | 'monthly_quota'>>,
+): void {
+  const fields: string[] = [];
+  const values: unknown[] = [];
+
+  if (updates.role !== undefined) {
+    fields.push('role = ?');
+    values.push(updates.role);
+  }
+  if (updates.enabled !== undefined) {
+    fields.push('enabled = ?');
+    values.push(updates.enabled);
+  }
+  if (updates.monthly_quota !== undefined) {
+    fields.push('monthly_quota = ?');
+    values.push(updates.monthly_quota);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  db.prepare(`UPDATE web_users SET ${fields.join(', ')} WHERE id = ?`).run(
+    ...values,
+  );
+}
+
+export function countWebUsers(): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) as cnt FROM web_users`)
+    .get() as { cnt: number };
+  return row.cnt;
+}
+
+export function getUserMonthlyTokenUsage(userId: string): number {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(COALESCE(token_input, 0) + COALESCE(token_output, 0)), 0) as total
+       FROM audit_logs
+       WHERE action = 'agent_completed'
+         AND user_id = ?
+         AND timestamp >= ?`,
+    )
+    .get(userId, monthStart) as { total: number };
+
+  return row.total;
 }
 
 export function createWebConversation(conv: WebConversation): void {

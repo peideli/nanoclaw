@@ -12,6 +12,7 @@ import {
   WEB_JWT_SECRET,
   GROUPS_DIR,
   PROJECT_ROOT,
+  DEFAULT_MONTHLY_QUOTA,
 } from '../config.js';
 import {
   createWebUser,
@@ -20,6 +21,13 @@ import {
   getWebConversation,
   getWebConversationMessages,
   getWebUserByUsername,
+  getWebUserById,
+  getAllWebUsers,
+  updateWebUser,
+  countWebUsers,
+  getUserMonthlyTokenUsage,
+  getAuditLogs,
+  getTokenUsageSummary,
   touchWebConversation,
   storeChatMetadata,
   storeMessageDirect,
@@ -48,6 +56,7 @@ interface AuthenticatedClient {
 interface JwtPayload {
   sub: string; // userId
   username: string;
+  role?: 'owner' | 'member';
 }
 
 export interface WebChatChannelOpts {
@@ -170,6 +179,29 @@ export class WebChatChannel implements Channel {
       return this.handleGetMessages(req, res, msgMatch[1]);
     }
 
+    // User self-service
+    if (pathname === '/api/me/usage' && method === 'GET') {
+      return this.handleMyUsage(req, res);
+    }
+
+    // Admin API
+    if (pathname === '/api/admin/users' && method === 'GET') {
+      return this.handleAdminGetUsers(req, res);
+    }
+    const userMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+    if (userMatch && method === 'PUT') {
+      return this.handleAdminUpdateUser(req, res, userMatch[1]);
+    }
+    if (pathname === '/api/admin/usage' && method === 'GET') {
+      return this.handleAdminUsage(req, res);
+    }
+    if (pathname === '/api/admin/audit-logs' && method === 'GET') {
+      return this.handleAdminAuditLogs(req, res);
+    }
+    if (pathname === '/api/admin/skills' && method === 'GET') {
+      return this.handleAdminSkills(req, res);
+    }
+
     // Static files
     return this.serveStatic(pathname, res);
   }
@@ -193,10 +225,21 @@ export class WebChatChannel implements Channel {
     const auth = req.headers.authorization || '';
     if (!auth.startsWith('Bearer ')) return null;
     try {
-      return jwt.verify(auth.slice(7), WEB_JWT_SECRET) as JwtPayload;
+      const payload = jwt.verify(auth.slice(7), WEB_JWT_SECRET) as JwtPayload;
+      // Check user is still enabled and fill role from DB (handles old JWTs without role)
+      const user = getWebUserById(payload.sub);
+      if (!user || !user.enabled) return null;
+      payload.role = user.role;
+      return payload;
     } catch {
       return null;
     }
+  }
+
+  private verifyOwner(req: http.IncomingMessage): JwtPayload | null {
+    const payload = this.verifyJwt(req);
+    if (!payload || payload.role !== 'owner') return null;
+    return payload;
   }
 
   private json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -228,17 +271,21 @@ export class WebChatChannel implements Channel {
 
     const id = randomUUID();
     const password_hash = await bcrypt.hash(password, 10);
+    const role = countWebUsers() === 0 ? 'owner' : 'member';
     createWebUser({
       id,
       username,
       password_hash,
       created_at: new Date().toISOString(),
+      role,
+      enabled: 1,
+      monthly_quota: DEFAULT_MONTHLY_QUOTA,
     });
 
-    const token = jwt.sign({ sub: id, username }, WEB_JWT_SECRET, {
+    const token = jwt.sign({ sub: id, username, role }, WEB_JWT_SECRET, {
       expiresIn: '30d',
     });
-    return this.json(res, 201, { token, username });
+    return this.json(res, 201, { token, username, role });
   }
 
   private async handleLogin(
@@ -259,14 +306,18 @@ export class WebChatChannel implements Channel {
 
     const user = getWebUserByUsername(username);
     if (!user) return this.json(res, 401, { error: 'Invalid credentials' });
+    if (!user.enabled)
+      return this.json(res, 403, { error: 'Account disabled' });
 
     const match = await bcrypt.compare(password, user.password_hash);
     if (!match) return this.json(res, 401, { error: 'Invalid credentials' });
 
-    const token = jwt.sign({ sub: user.id, username }, WEB_JWT_SECRET, {
-      expiresIn: '30d',
-    });
-    return this.json(res, 200, { token, username });
+    const token = jwt.sign(
+      { sub: user.id, username, role: user.role },
+      WEB_JWT_SECRET,
+      { expiresIn: '30d' },
+    );
+    return this.json(res, 200, { token, username, role: user.role });
   }
 
   private handleGetConversations(
@@ -351,6 +402,194 @@ export class WebChatChannel implements Channel {
     );
   }
 
+  // --- User self-service ---
+
+  private handleMyUsage(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
+    const payload = this.verifyJwt(req);
+    if (!payload) return this.json(res, 401, { error: 'Unauthorized' });
+
+    const usage = getUserMonthlyTokenUsage(payload.sub);
+    const user = getWebUserById(payload.sub);
+    return this.json(res, 200, {
+      usage,
+      quota: user?.monthly_quota ?? DEFAULT_MONTHLY_QUOTA,
+      role: user?.role ?? 'member',
+    });
+  }
+
+  // --- Admin API ---
+
+  private handleAdminGetUsers(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
+    if (!this.verifyOwner(req))
+      return this.json(res, 403, { error: 'Forbidden' });
+
+    const users = getAllWebUsers().map((u) => ({
+      id: u.id,
+      username: u.username,
+      role: u.role,
+      enabled: u.enabled,
+      monthly_quota: u.monthly_quota,
+      created_at: u.created_at,
+    }));
+    return this.json(res, 200, users);
+  }
+
+  private async handleAdminUpdateUser(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    userId: string,
+  ): Promise<void> {
+    const owner = this.verifyOwner(req);
+    if (!owner) return this.json(res, 403, { error: 'Forbidden' });
+
+    let body: { role?: string; enabled?: number; monthly_quota?: number };
+    try {
+      body = (await this.readBody(req)) as typeof body;
+    } catch {
+      return this.json(res, 400, { error: 'Invalid JSON' });
+    }
+
+    const target = getWebUserById(userId);
+    if (!target) return this.json(res, 404, { error: 'User not found' });
+
+    // Prevent owner from demoting themselves
+    if (userId === owner.sub && body.role && body.role !== 'owner') {
+      return this.json(res, 400, { error: 'Cannot demote yourself' });
+    }
+
+    const updates: { role?: 'owner' | 'member'; enabled?: number; monthly_quota?: number } = {};
+    if (body.role === 'owner' || body.role === 'member') updates.role = body.role;
+    if (body.enabled === 0 || body.enabled === 1) updates.enabled = body.enabled;
+    if (typeof body.monthly_quota === 'number' && body.monthly_quota >= 0)
+      updates.monthly_quota = body.monthly_quota;
+
+    updateWebUser(userId, updates);
+    return this.json(res, 200, { ok: true });
+  }
+
+  private handleAdminUsage(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
+    if (!this.verifyOwner(req))
+      return this.json(res, 403, { error: 'Forbidden' });
+
+    const users = getAllWebUsers();
+    const now = new Date();
+    const monthStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      1,
+    ).toISOString();
+
+    const result = users.map((u) => {
+      const summary = getTokenUsageSummary({ userId: u.id, since: monthStart });
+      return {
+        id: u.id,
+        username: u.username,
+        role: u.role,
+        token_input: summary.total_input,
+        token_output: summary.total_output,
+        total: summary.total_input + summary.total_output,
+        quota: u.monthly_quota,
+        invocations: summary.invocation_count,
+      };
+    });
+    return this.json(res, 200, result);
+  }
+
+  private handleAdminAuditLogs(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
+    if (!this.verifyOwner(req))
+      return this.json(res, 403, { error: 'Forbidden' });
+
+    const url = new URL(req.url || '/', 'http://localhost');
+    const userId = url.searchParams.get('user') ?? undefined;
+    const action = url.searchParams.get('action') as import('../types.js').AuditAction | undefined;
+    const since = url.searchParams.get('since') ?? undefined;
+    const limit = parseInt(url.searchParams.get('limit') || '100', 10) || 100;
+
+    const logs = getAuditLogs({ userId, action: action || undefined, since, limit });
+    return this.json(res, 200, logs);
+  }
+
+  private handleAdminSkills(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
+    if (!this.verifyOwner(req))
+      return this.json(res, 403, { error: 'Forbidden' });
+
+    const skills: Array<{ name: string; type: string; description: string }> = [];
+
+    // Scan container/skills/
+    const containerSkillsDir = path.resolve(PROJECT_ROOT, 'container', 'skills');
+    if (fs.existsSync(containerSkillsDir)) {
+      try {
+        for (const entry of fs.readdirSync(containerSkillsDir, {
+          withFileTypes: true,
+        })) {
+          if (!entry.isDirectory()) continue;
+          const metaPath = path.join(containerSkillsDir, entry.name, '_meta.json');
+          let desc = '';
+          if (fs.existsSync(metaPath)) {
+            try {
+              const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+              desc = meta.description || '';
+            } catch { /* ignore */ }
+          }
+          skills.push({ name: entry.name, type: 'container', description: desc });
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Scan groups/*/. claude/skills/
+    if (fs.existsSync(GROUPS_DIR)) {
+      try {
+        for (const groupEntry of fs.readdirSync(GROUPS_DIR, {
+          withFileTypes: true,
+        })) {
+          if (!groupEntry.isDirectory()) continue;
+          const groupSkillsDir = path.join(
+            GROUPS_DIR,
+            groupEntry.name,
+            '.claude',
+            'skills',
+          );
+          if (!fs.existsSync(groupSkillsDir)) continue;
+          for (const entry of fs.readdirSync(groupSkillsDir, {
+            withFileTypes: true,
+          })) {
+            if (!entry.isDirectory()) continue;
+            const metaPath = path.join(groupSkillsDir, entry.name, '_meta.json');
+            let desc = '';
+            if (fs.existsSync(metaPath)) {
+              try {
+                const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+                desc = meta.description || '';
+              } catch { /* ignore */ }
+            }
+            skills.push({
+              name: entry.name,
+              type: `group:${groupEntry.name}`,
+              description: desc,
+            });
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
+    return this.json(res, 200, skills);
+  }
+
   private serveStatic(pathname: string, res: http.ServerResponse): void {
     // Prevent path traversal
     const safePath = path.resolve(WEB_DIR, '.' + pathname);
@@ -424,13 +663,19 @@ export class WebChatChannel implements Channel {
         send({ type: 'error', message: 'Invalid token' });
         return;
       }
+      // Check user is still enabled
+      const user = getWebUserById(payload.sub);
+      if (!user || !user.enabled) {
+        send({ type: 'error', message: 'Account disabled' });
+        return;
+      }
       this.clients.set(sessionId, {
         ws,
         userId: payload.sub,
         username: payload.username,
         convId: null,
       });
-      send({ type: 'auth_ok', username: payload.username });
+      send({ type: 'auth_ok', username: payload.username, role: user.role });
       return;
     }
 
@@ -469,6 +714,19 @@ export class WebChatChannel implements Channel {
       if (!conv) {
         send({ type: 'error', message: 'Conversation not found' });
         return;
+      }
+
+      // Quota check for non-owner users
+      const msgUser = getWebUserById(client.userId);
+      if (msgUser && msgUser.role !== 'owner') {
+        const usage = getUserMonthlyTokenUsage(client.userId);
+        if (usage >= msgUser.monthly_quota) {
+          send({
+            type: 'error',
+            message: '本月额度已用完，请联系管理员。',
+          });
+          return;
+        }
       }
 
       const jid = `webchat-${convId}@webchat`;

@@ -12,6 +12,7 @@ const envConfig = readEnvFile([
   'WEB_ENABLED',
   'WEB_PORT',
   'WEB_JWT_SECRET',
+  'DEFAULT_MONTHLY_QUOTA',
   'CLASSIFIER_API_BASE',
   'CLASSIFIER_API_KEY',
   'CLASSIFIER_MODEL',
@@ -88,6 +89,15 @@ export const WEB_PORT = parseInt(
 );
 export const WEB_JWT_SECRET =
   process.env.WEB_JWT_SECRET || envConfig.WEB_JWT_SECRET || '';
+export const DEFAULT_MONTHLY_QUOTA = Math.max(
+  1000,
+  parseInt(
+    process.env.DEFAULT_MONTHLY_QUOTA ||
+      envConfig.DEFAULT_MONTHLY_QUOTA ||
+      '500000',
+    10,
+  ) || 500000,
+);
 
 export const MAX_CONTEXT_MESSAGES = Math.max(
   1,

@@ -25,12 +25,20 @@ export function formatMessages(
   return `${header}<messages>\n${lines.join('\n')}\n</messages>`;
 }
 
-export function formatMessagesWithWindow(windowed: WindowedMessages): string {
-  const lines = windowed.messages.map(
-    (m) =>
-      `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
-  );
+export function formatMessagesWithWindow(
+  windowed: WindowedMessages,
+  timezone?: string,
+): string {
+  const lines = windowed.messages.map((m) => {
+    const displayTime = timezone
+      ? formatLocalTime(m.timestamp, timezone)
+      : m.timestamp;
+    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}</message>`;
+  });
   const parts: string[] = [];
+  if (timezone) {
+    parts.push(`<context timezone="${escapeXml(timezone)}" />`);
+  }
   if (windowed.droppedCount > 0) {
     parts.push(
       `<context-note>${windowed.droppedCount} earlier messages omitted (showing most recent ${windowed.messages.length} of ${windowed.totalCount})</context-note>`,
