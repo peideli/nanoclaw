@@ -16,6 +16,9 @@ const envConfig = readEnvFile([
   'CLASSIFIER_API_BASE',
   'CLASSIFIER_API_KEY',
   'CLASSIFIER_MODEL',
+  'AGENT_API_BASE',
+  'AGENT_API_KEY',
+  'AGENT_MODEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -122,6 +125,14 @@ export const CLASSIFIER_MODEL =
   process.env.CLASSIFIER_MODEL ||
   envConfig.CLASSIFIER_MODEL ||
   'moonshot-v1-8k';
+
+// Mini-Agent engine configuration (passed to container as env vars)
+export const AGENT_API_BASE =
+  process.env.AGENT_API_BASE || envConfig.AGENT_API_BASE || '';
+export const AGENT_API_KEY =
+  process.env.AGENT_API_KEY || envConfig.AGENT_API_KEY || '';
+export const AGENT_MODEL =
+  process.env.AGENT_MODEL || envConfig.AGENT_MODEL || 'MiniMax-M2.5';
 
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
