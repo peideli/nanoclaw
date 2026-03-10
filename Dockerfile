@@ -1,11 +1,14 @@
 # === Build ===
 FROM node:22-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts
+RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src/ ./src/
 RUN npx tsc
+RUN rm -rf node_modules && npm ci --omit=dev --ignore-scripts && npm rebuild better-sqlite3
 
 # === Runtime ===
 FROM node:22-slim

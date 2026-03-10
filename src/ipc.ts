@@ -42,7 +42,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
   ipcWatcherRunning = true;
 
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcBaseDir, { recursive: true });
+  fs.mkdirSync(ipcBaseDir, { recursive: true, mode: 0o777 });
 
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)

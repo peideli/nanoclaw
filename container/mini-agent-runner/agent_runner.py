@@ -196,6 +196,27 @@ All relative paths resolve relative to this directory.
 - Send messages and manage tasks via NanoClaw MCP tools
 """
 
+    # Load skills from /home/node/.claude/skills/
+    skills_dir = '/home/node/.claude/skills'
+    if os.path.isdir(skills_dir):
+        skill_docs = []
+        for skill_name in sorted(os.listdir(skills_dir)):
+            skill_path = os.path.join(skills_dir, skill_name)
+            if not os.path.isdir(skill_path):
+                continue
+            # Look for documentation/instructions in the skill
+            doc = ''
+            for doc_file in ['README.md', 'INSTRUCTIONS.md', 'skill.py']:
+                doc_path = os.path.join(skill_path, doc_file)
+                if os.path.exists(doc_path):
+                    with open(doc_path, 'r') as f:
+                        doc = f.read()
+                    break
+            if doc:
+                skill_docs.append(f'### Skill: {skill_name}\n\nLocation: `{skill_path}`\n\n{doc}')
+        if skill_docs:
+            base_prompt += '\n## Available Skills\n\nThe following skills are installed and available via Python. Use `python3` to import and run them.\n\n' + '\n\n---\n\n'.join(skill_docs)
+
     if parts:
         base_prompt += '\n## Project Context\n\n' + '\n\n---\n\n'.join(parts)
 

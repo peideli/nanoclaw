@@ -817,15 +817,19 @@ export function updateWebUser(
 }
 
 export function countWebUsers(): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) as cnt FROM web_users`)
-    .get() as { cnt: number };
+  const row = db.prepare(`SELECT COUNT(*) as cnt FROM web_users`).get() as {
+    cnt: number;
+  };
   return row.cnt;
 }
 
 export function getUserMonthlyTokenUsage(userId: string): number {
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const monthStart = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    1,
+  ).toISOString();
 
   const row = db
     .prepare(

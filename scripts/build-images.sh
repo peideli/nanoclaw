@@ -4,32 +4,52 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Support --platform flag (e.g. --platform linux/amd64)
+PLATFORM=""
+PLATFORM_FLAG=""
+for arg in "$@"; do
+  if [[ "$arg" == --platform=* ]]; then
+    PLATFORM="${arg#--platform=}"
+    PLATFORM_FLAG="--platform $PLATFORM"
+  fi
+done
+# Remove --platform=* from positional args
+ARGS=()
+for arg in "$@"; do
+  [[ "$arg" == --platform=* ]] || ARGS+=("$arg")
+done
+set -- "${ARGS[@]}"
+
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <command> [args]
+Usage: $(basename "$0") [--platform=linux/amd64] <command> [args]
 
 Commands:
   base              Build nanoclaw-base host image
   agent             Build nanoclaw-agent container image
   tenant <name>     Build nanoclaw-<name> tenant image (from tenants/<name>/)
 
+Options:
+  --platform=OS/ARCH  Target platform (e.g. linux/amd64, linux/arm64)
+
 Examples:
   $(basename "$0") base
-  $(basename "$0") agent
+  $(basename "$0") --platform=linux/amd64 base
+  $(basename "$0") --platform=linux/amd64 agent
   $(basename "$0") tenant acme
 EOF
   exit 1
 }
 
 build_base() {
-  echo "==> Building nanoclaw-base:latest"
-  docker build -t nanoclaw-base:latest "$PROJECT_ROOT"
+  echo "==> Building nanoclaw-base:latest${PLATFORM:+ ($PLATFORM)}"
+  docker build $PLATFORM_FLAG --provenance=false --sbom=false -t nanoclaw-base:latest "$PROJECT_ROOT"
   echo "==> Done: nanoclaw-base:latest"
 }
 
 build_agent() {
-  echo "==> Building nanoclaw-agent:latest"
-  "$PROJECT_ROOT/container/build.sh"
+  echo "==> Building nanoclaw-agent:latest${PLATFORM:+ ($PLATFORM)}"
+  BUILD_PLATFORM="$PLATFORM" "$PROJECT_ROOT/container/build.sh"
   echo "==> Done: nanoclaw-agent:latest"
 }
 

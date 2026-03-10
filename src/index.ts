@@ -777,16 +777,16 @@ async function main(): Promise<void> {
     channels.push(channel);
     await channel.connect();
   }
-  if (channels.length === 0) {
-    logger.fatal('No channels connected');
-    process.exit(1);
-  }
-
   if (WEB_ENABLED) {
     const webchat = new WebChatChannel({ registerGroup });
     channels.push(webchat);
     await webchat.connect();
     logger.info({ port: WEB_PORT }, 'WebChat channel started');
+  }
+
+  if (channels.length === 0) {
+    logger.fatal('No channels connected');
+    process.exit(1);
   }
 
   // Start subsystems (independently of connection handler)

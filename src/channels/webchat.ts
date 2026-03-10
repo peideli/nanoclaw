@@ -463,9 +463,15 @@ export class WebChatChannel implements Channel {
       return this.json(res, 400, { error: 'Cannot demote yourself' });
     }
 
-    const updates: { role?: 'owner' | 'member'; enabled?: number; monthly_quota?: number } = {};
-    if (body.role === 'owner' || body.role === 'member') updates.role = body.role;
-    if (body.enabled === 0 || body.enabled === 1) updates.enabled = body.enabled;
+    const updates: {
+      role?: 'owner' | 'member';
+      enabled?: number;
+      monthly_quota?: number;
+    } = {};
+    if (body.role === 'owner' || body.role === 'member')
+      updates.role = body.role;
+    if (body.enabled === 0 || body.enabled === 1)
+      updates.enabled = body.enabled;
     if (typeof body.monthly_quota === 'number' && body.monthly_quota >= 0)
       updates.monthly_quota = body.monthly_quota;
 
@@ -513,11 +519,18 @@ export class WebChatChannel implements Channel {
 
     const url = new URL(req.url || '/', 'http://localhost');
     const userId = url.searchParams.get('user') ?? undefined;
-    const action = url.searchParams.get('action') as import('../types.js').AuditAction | undefined;
+    const action = url.searchParams.get('action') as
+      | import('../types.js').AuditAction
+      | undefined;
     const since = url.searchParams.get('since') ?? undefined;
     const limit = parseInt(url.searchParams.get('limit') || '100', 10) || 100;
 
-    const logs = getAuditLogs({ userId, action: action || undefined, since, limit });
+    const logs = getAuditLogs({
+      userId,
+      action: action || undefined,
+      since,
+      limit,
+    });
     return this.json(res, 200, logs);
   }
 
@@ -528,27 +541,44 @@ export class WebChatChannel implements Channel {
     if (!this.verifyOwner(req))
       return this.json(res, 403, { error: 'Forbidden' });
 
-    const skills: Array<{ name: string; type: string; description: string }> = [];
+    const skills: Array<{ name: string; type: string; description: string }> =
+      [];
 
     // Scan container/skills/
-    const containerSkillsDir = path.resolve(PROJECT_ROOT, 'container', 'skills');
+    const containerSkillsDir = path.resolve(
+      PROJECT_ROOT,
+      'container',
+      'skills',
+    );
     if (fs.existsSync(containerSkillsDir)) {
       try {
         for (const entry of fs.readdirSync(containerSkillsDir, {
           withFileTypes: true,
         })) {
           if (!entry.isDirectory()) continue;
-          const metaPath = path.join(containerSkillsDir, entry.name, '_meta.json');
+          const metaPath = path.join(
+            containerSkillsDir,
+            entry.name,
+            '_meta.json',
+          );
           let desc = '';
           if (fs.existsSync(metaPath)) {
             try {
               const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
               desc = meta.description || '';
-            } catch { /* ignore */ }
+            } catch {
+              /* ignore */
+            }
           }
-          skills.push({ name: entry.name, type: 'container', description: desc });
+          skills.push({
+            name: entry.name,
+            type: 'container',
+            description: desc,
+          });
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // Scan groups/*/. claude/skills/
@@ -569,13 +599,19 @@ export class WebChatChannel implements Channel {
             withFileTypes: true,
           })) {
             if (!entry.isDirectory()) continue;
-            const metaPath = path.join(groupSkillsDir, entry.name, '_meta.json');
+            const metaPath = path.join(
+              groupSkillsDir,
+              entry.name,
+              '_meta.json',
+            );
             let desc = '';
             if (fs.existsSync(metaPath)) {
               try {
                 const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
                 desc = meta.description || '';
-              } catch { /* ignore */ }
+              } catch {
+                /* ignore */
+              }
             }
             skills.push({
               name: entry.name,
@@ -584,7 +620,9 @@ export class WebChatChannel implements Channel {
             });
           }
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     return this.json(res, 200, skills);

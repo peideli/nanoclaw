@@ -10,10 +10,15 @@ IMAGE_NAME="nanoclaw-agent"
 TAG="${1:-latest}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 
-echo "Building NanoClaw agent container image..."
-echo "Image: ${IMAGE_NAME}:${TAG}"
+PLATFORM_FLAG=""
+if [[ -n "${BUILD_PLATFORM:-}" ]]; then
+  PLATFORM_FLAG="--platform ${BUILD_PLATFORM}"
+fi
 
-${CONTAINER_RUNTIME} build -t "${IMAGE_NAME}:${TAG}" .
+echo "Building NanoClaw agent container image..."
+echo "Image: ${IMAGE_NAME}:${TAG}${BUILD_PLATFORM:+ ($BUILD_PLATFORM)}"
+
+${CONTAINER_RUNTIME} build $PLATFORM_FLAG --provenance=false --sbom=false -t "${IMAGE_NAME}:${TAG}" .
 
 echo ""
 echo "Build complete!"
